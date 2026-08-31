@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { X, Send, Bot, User, Sparkles, Trash2, HelpCircle } from 'lucide-react';
 import { motion } from 'motion/react';
+import { generateClientChatReply } from '../lib/gtoSolver';
 
 interface CoachChatModalProps {
   isOpen: boolean;
@@ -68,18 +69,18 @@ export const CoachChatModal: React.FC<CoachChatModalProps> = ({ isOpen, onClose 
         const data = await response.json();
         setMessages(prev => [
           ...prev,
-          { role: 'model', content: data.reply || '답변을 불러오지 못했습니다.', timestamp: Date.now() },
+          { role: 'model', content: data.reply || generateClientChatReply(text), timestamp: Date.now() },
         ]);
       } else {
         setMessages(prev => [
           ...prev,
-          { role: 'model', content: 'AI 코치 연결에 문제가 발생했습니다. 잠시 후 다시 시도해주세요.', timestamp: Date.now() },
+          { role: 'model', content: generateClientChatReply(text), timestamp: Date.now() },
         ]);
       }
     } catch {
       setMessages(prev => [
         ...prev,
-        { role: 'model', content: '네트워크 연결 오류가 발생했습니다.', timestamp: Date.now() },
+        { role: 'model', content: generateClientChatReply(text), timestamp: Date.now() },
       ]);
     } finally {
       setIsLoading(false);

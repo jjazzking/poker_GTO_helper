@@ -24,6 +24,7 @@ import {
   calculateBotAction,
 } from './lib/pokerEngine';
 import { pokerAudio } from './lib/audioSynth';
+import { generateClientGTOAdvice } from './lib/gtoSolver';
 import { Navbar } from './components/Navbar';
 import { PokerTable } from './components/PokerTable';
 import { BettingControls } from './components/BettingControls';
@@ -303,9 +304,37 @@ export default function App() {
       if (response.ok) {
         const data = await response.json();
         setCoachAdvice(data);
+      } else {
+        const fallback = generateClientGTOAdvice({
+          heroCards: hero.cards,
+          communityCards,
+          street: bettingRound,
+          potSize: totalPot,
+          currentBet: currentHighestBet,
+          toCall,
+          position: hero.position,
+          heroChips: hero.chips,
+          activeOpponents,
+          calculatedEquity: equityData.winRate,
+          potOdds: equityData.potOdds,
+        });
+        setCoachAdvice(fallback);
       }
-    } catch (err) {
-      console.error('Failed to fetch AI coach advice:', err);
+    } catch {
+      const fallback = generateClientGTOAdvice({
+        heroCards: hero.cards,
+        communityCards,
+        street: bettingRound,
+        potSize: totalPot,
+        currentBet: currentHighestBet,
+        toCall,
+        position: hero.position,
+        heroChips: hero.chips,
+        activeOpponents,
+        calculatedEquity: equityData.winRate,
+        potOdds: equityData.potOdds,
+      });
+      setCoachAdvice(fallback);
     } finally {
       isFetchingCoachRef.current = false;
       setIsLoadingCoach(false);

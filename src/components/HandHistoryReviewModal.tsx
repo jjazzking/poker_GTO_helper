@@ -3,6 +3,7 @@ import { HandHistoryItem } from '../types/poker';
 import { PlayingCard } from './PlayingCard';
 import { X, Sparkles, Award, AlertTriangle, CheckCircle, ShieldCheck, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
+import { generateClientHandReview } from '../lib/gtoSolver';
 
 interface HandHistoryReviewModalProps {
   isOpen: boolean;
@@ -42,9 +43,13 @@ export const HandHistoryReviewModal: React.FC<HandHistoryReviewModalProps> = ({
       if (response.ok) {
         const data = await response.json();
         setAnalysis(data);
+      } else {
+        const fallback = generateClientHandReview(handHistory);
+        setAnalysis(fallback);
       }
-    } catch (error) {
-      console.error('Failed to fetch hand analysis:', error);
+    } catch {
+      const fallback = generateClientHandReview(handHistory);
+      setAnalysis(fallback);
     } finally {
       setIsLoading(false);
     }
