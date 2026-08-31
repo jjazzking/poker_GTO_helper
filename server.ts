@@ -582,16 +582,19 @@ ${JSON.stringify(handHistory, null, 2)}
 
   // AI Poker Coach Interactive Q&A Chat
   app.post('/api/poker/chat', async (req: Request, res: Response) => {
-    const { message, chatHistory } = req.body;
+    const { message, chatHistory, gameContext } = req.body;
     const trimmed = (message || '').trim();
-    const cacheKey = `chat_${trimmed.toLowerCase()}`;
+    const cacheKey = `chat_${trimmed.toLowerCase()}_${gameContext ? JSON.stringify(gameContext) : ''}`;
 
-    const cached = getFromCache<{ reply: string }>(cacheKey);
+    const cached = getFromCache<{ reply: string; source: string }>(cacheKey);
     if (cached) {
       return res.json(cached);
     }
 
-    const fallbackReply = { reply: generateGTOFallbackChatReply(trimmed) };
+    const fallbackReply = {
+      reply: generateGTOFallbackChatReply(trimmed),
+      source: 'GTO Solver Knowledge Base',
+    };
 
     if (!isGeminiAvailable()) {
       setToCache(cacheKey, fallbackReply);
@@ -605,6 +608,24 @@ ${JSON.stringify(handHistory, null, 2)}
     }
 
     try {
+      let systemInstruction = `당신은 텍사스 홀덤 전문 AI 코치 "포커 마스터(Poker Master)"입니다. 
+포커 수학, GTO 전략, 익스플로잇 플레이, 멘탈 게임, 포지션 전략, 뱅크롤 관리 등 포커에 관한 모든 질문에 친절하고 깊이 있게 한국어로 설명해주세요. 
+복잡한 수식이나 개념(예: 4의 법칙, 2의 법칙, SPR, 폴드 에쿼티, 블러프 캐칭)은 예시를 들어 이해하기 쉽게 설명하세요.`;
+
+      if (gameContext) {
+        systemInstruction += `\n\n[현재 사용자의 실시간 테이블 상황]
+- 스트리트: ${gameContext.street || '진행 중'}
+- 포지션: ${gameContext.position || '알 수 없음'}
+- 내 핸드: ${JSON.stringify(gameContext.heroCards || [])}
+- 커뮤니티 카드: ${JSON.stringify(gameContext.communityCards || [])}
+- 현재 팟: $${gameContext.potSize || 0}
+- 콜 요구액: $${gameContext.toCall || 0}
+- 내 승률 에쿼티: ${gameContext.winRate || 0}%
+- 현재 메이드 조합: ${gameContext.handStrengthDesc || ''}
+- 목표 핸드/아웃츠: ${gameContext.aimingHandSummary || ''} (${gameContext.outsCount || 0} Outs)
+사용자가 현재 핸드 상황이나 액션을 물어보면 위 실시간 정보를 적극 반영하여 구체적이고 실전적인 답변을 제공하세요.`;
+      }
+
       const contents = [
         ...(chatHistory || []).map((msg: { role: string; content: string }) => ({
           role: msg.role === 'user' ? 'user' : 'model',
@@ -617,13 +638,14 @@ ${JSON.stringify(handHistory, null, 2)}
         model: 'gemini-2.5-flash',
         contents,
         config: {
-          systemInstruction: `당신은 텍사스 홀덤 전문 AI 코치 "포커 마스터(Poker Master)"입니다. 
-포커 수학, GTO 전략, 익스플로잇 플레이, 멘탈 게임, 포지션 전략, 뱅크롤 관리 등 포커에 관한 모든 질문에 친절하고 깊이 있게 한국어로 설명해주세요. 
-복잡한 수식이나 개념(예: 4의 법칙, 2의 법칙, SPR, 폴드 에쿼티, 블러프 캐칭)은 예시를 들어 이해하기 쉽게 설명하세요.`,
+          systemInstruction,
         },
       });
 
-      const result = { reply: response.text || fallbackReply.reply };
+      const result = {
+        reply: response.text || fallbackReply.reply,
+        source: 'Gemini 3.7 / 2.5 Flash API',
+      };
       setToCache(cacheKey, result);
       return res.json(result);
     } catch (err: unknown) {

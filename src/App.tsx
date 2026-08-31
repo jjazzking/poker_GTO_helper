@@ -235,8 +235,13 @@ export default function App() {
     pokerAudio.setMuted(next);
   };
 
-  // Switch View Mode (handle heads-up switch)
+  // Switch View Mode (handle heads-up switch and coach chat)
   const handleSelectView = (view: AppViewMode) => {
+    if (view === 'coach_chat') {
+      setViewMode(isHeadsUpMode ? 'headsup' : 'table');
+      setIsCoachChatOpen(true);
+      return;
+    }
     setViewMode(view);
     if (view === 'headsup' && !isHeadsUpMode) {
       setIsHeadsUpMode(true);
@@ -987,72 +992,101 @@ export default function App() {
       />
 
       {/* Main App Content Viewport */}
-      <main className="flex-1 w-full max-w-7xl mx-auto px-3 sm:px-4 py-4 flex flex-col gap-5">
+      <main className={`flex-1 w-full ${isCoachChatOpen ? 'max-w-[1920px]' : 'max-w-7xl'} mx-auto px-2 sm:px-4 py-4 flex flex-col gap-5 transition-all duration-300`}>
         {viewMode === 'table' || viewMode === 'headsup' ? (
-          /* Live Poker Felt Table View */
-          <div className="flex flex-col gap-4">
-            {/* Upper Area: Left Poker Table + Right Vertical Betting Controls */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
-              {/* Left Column: The Poker Felt Table */}
-              <div className="lg:col-span-8 xl:col-span-9 flex flex-col">
-                <PokerTable
-                  players={players}
-                  communityCards={communityCards}
-                  pots={pots}
-                  currentTurnPlayerId={currentTurnPlayerId}
-                  dealerSeatIndex={dealerSeatIndex}
-                  bettingRound={bettingRound}
-                  isHandActive={isHandActive}
-                  winners={winners}
-                  heroBestHand={
-                    heroPlayer && heroPlayer.cards.length === 2
-                      ? evaluateHand([...heroPlayer.cards, ...communityCards])
-                      : null
-                  }
-                  useFourColor={useFourColor}
-                  showAiCards={showAiCards}
-                  gameSpeed={gameSpeed}
-                  isHeadsUpMode={isHeadsUpMode}
-                  onNextHand={startNewHand}
-                  onRebuyChips={handleRebuyChips}
-                  onToggleAiCards={() => setShowAiCards(!showAiCards)}
-                  onChangeGameSpeed={setGameSpeed}
-                  onOpenHandReview={() => setIsHandReviewOpen(true)}
-                  hasHandHistoryToReview={handHistory.length > 0}
-                />
+          /* Live Poker Felt Table + Side-by-Side AI Coach View */
+          <div className={`grid grid-cols-1 ${isCoachChatOpen ? 'xl:grid-cols-12' : 'grid-cols-1'} gap-4 items-start`}>
+            {/* Left Area: Complete Poker Game (Shifted left when AI open) */}
+            <div className={`${isCoachChatOpen ? 'xl:col-span-8 2xl:col-span-8' : 'w-full'} flex flex-col gap-4 transition-all duration-300`}>
+              {/* Upper Area: Left Poker Table + Right Vertical Betting Controls */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+                {/* Left Column: The Poker Felt Table */}
+                <div className="lg:col-span-8 xl:col-span-9 flex flex-col">
+                  <PokerTable
+                    players={players}
+                    communityCards={communityCards}
+                    pots={pots}
+                    currentTurnPlayerId={currentTurnPlayerId}
+                    dealerSeatIndex={dealerSeatIndex}
+                    bettingRound={bettingRound}
+                    isHandActive={isHandActive}
+                    winners={winners}
+                    heroBestHand={
+                      heroPlayer && heroPlayer.cards.length === 2
+                        ? evaluateHand([...heroPlayer.cards, ...communityCards])
+                        : null
+                    }
+                    useFourColor={useFourColor}
+                    showAiCards={showAiCards}
+                    gameSpeed={gameSpeed}
+                    isHeadsUpMode={isHeadsUpMode}
+                    onNextHand={startNewHand}
+                    onRebuyChips={handleRebuyChips}
+                    onToggleAiCards={() => setShowAiCards(!showAiCards)}
+                    onChangeGameSpeed={setGameSpeed}
+                    onOpenHandReview={() => setIsHandReviewOpen(true)}
+                    hasHandHistoryToReview={handHistory.length > 0}
+                  />
+                </div>
+
+                {/* Right Column: Vertical Interactive Betting Controls */}
+                <div className="lg:col-span-4 xl:col-span-3 flex flex-col justify-stretch">
+                  <BettingControls
+                    isHeroTurn={isHeroTurn}
+                    canCheck={canCheck}
+                    toCall={toCall}
+                    minBet={minBet}
+                    maxBet={maxBet}
+                    potSize={totalPot}
+                    bigBlind={BIG_BLIND}
+                    heroChips={heroPlayer?.chips || 0}
+                    onAction={(act, amt) => handlePlayerAction('hero', act, amt)}
+                    recommendedAction={coachAdvice?.action}
+                    recommendedAmount={coachAdvice?.suggestedAmount}
+                  />
+                </div>
               </div>
 
-              {/* Right Column: Vertical Interactive Betting Controls */}
-              <div className="lg:col-span-4 xl:col-span-3 flex flex-col justify-stretch">
-                <BettingControls
+              {/* Lower Area: Full-Width AI Coach & Real-time Math HUD */}
+              <div className="w-full">
+                <AICoachPanel
+                  equityData={equityData}
+                  coachAdvice={coachAdvice}
+                  isLoadingCoach={isLoadingCoach}
+                  onRefreshCoachAdvice={() => fetchCoachAdvice(true)}
+                  onOpenChatModal={() => setIsCoachChatOpen(!isCoachChatOpen)}
+                  isChatOpen={isCoachChatOpen}
                   isHeroTurn={isHeroTurn}
-                  canCheck={canCheck}
                   toCall={toCall}
-                  minBet={minBet}
-                  maxBet={maxBet}
-                  potSize={totalPot}
-                  bigBlind={BIG_BLIND}
-                  heroChips={heroPlayer?.chips || 0}
-                  onAction={(act, amt) => handlePlayerAction('hero', act, amt)}
-                  recommendedAction={coachAdvice?.action}
-                  recommendedAmount={coachAdvice?.suggestedAmount}
+                  useFourColor={useFourColor}
                 />
               </div>
             </div>
 
-            {/* Lower Area: Full-Width AI Coach & Real-time Math HUD */}
-            <div className="w-full">
-              <AICoachPanel
-                equityData={equityData}
-                coachAdvice={coachAdvice}
-                isLoadingCoach={isLoadingCoach}
-                onRefreshCoachAdvice={() => fetchCoachAdvice(true)}
-                onOpenChatModal={() => setIsCoachChatOpen(true)}
-                isHeroTurn={isHeroTurn}
-                toCall={toCall}
-                useFourColor={useFourColor}
-              />
-            </div>
+            {/* Right Area: Interactive Side AI Coach Chat Panel */}
+            {isCoachChatOpen && (
+              <div className="xl:col-span-4 2xl:col-span-4 w-full h-[calc(100vh-100px)] min-h-[640px] sticky top-16 flex flex-col">
+                <CoachChatModal
+                  isOpen={true}
+                  onClose={() => setIsCoachChatOpen(false)}
+                  gameContext={{
+                    heroCards: heroPlayer?.cards || [],
+                    communityCards,
+                    potSize: pots.reduce((sum, p) => sum + p.amount, 0),
+                    currentBet: currentHighestBet,
+                    toCall,
+                    position: heroPlayer?.position || 'BTN',
+                    street: bettingRound,
+                    heroChips: heroPlayer?.chips || 0,
+                    winRate: equityData.winRate,
+                    handStrengthDesc: equityData.handStrengthDesc,
+                    aimingHandSummary: equityData.aimingHandSummary,
+                    outsCount: equityData.outsCount,
+                  }}
+                  useFourColor={useFourColor}
+                />
+              </div>
+            )}
           </div>
         ) : viewMode === 'range_chart' ? (
           /* Preflop 13x13 Matrix Range Chart View */
@@ -1060,13 +1094,6 @@ export default function App() {
         ) : viewMode === 'drills' ? (
           /* Training Drills & Math Quiz View */
           <DrillMode />
-        ) : viewMode === 'coach_chat' ? (
-          /* Coach Chat Full Screen View */
-          <div className="w-full flex justify-center">
-            <div className="w-full max-w-4xl">
-              <CoachChatModal isOpen={true} onClose={() => setViewMode('table')} />
-            </div>
-          </div>
         ) : null}
       </main>
 
@@ -1099,10 +1126,6 @@ export default function App() {
           })
         }
       />
-
-      {viewMode !== 'coach_chat' && (
-        <CoachChatModal isOpen={isCoachChatOpen} onClose={() => setIsCoachChatOpen(false)} />
-      )}
     </div>
   );
 }

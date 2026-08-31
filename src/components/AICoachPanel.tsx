@@ -10,6 +10,7 @@ interface AICoachPanelProps {
   isLoadingCoach: boolean;
   onRefreshCoachAdvice: () => void;
   onOpenChatModal: () => void;
+  isChatOpen?: boolean;
   isHeroTurn: boolean;
   toCall: number;
   useFourColor?: boolean;
@@ -21,6 +22,7 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
   isLoadingCoach,
   onRefreshCoachAdvice,
   onOpenChatModal,
+  isChatOpen = false,
   isHeroTurn,
   toCall,
   useFourColor = true,
@@ -109,10 +111,15 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
           <button
             type="button"
             onClick={onOpenChatModal}
-            className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-400/40 text-xs font-bold flex items-center gap-1.5 transition shadow-md shadow-indigo-600/30 cursor-pointer"
+            className={`px-3.5 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition shadow-md cursor-pointer ${
+              isChatOpen
+                ? 'bg-indigo-950/80 hover:bg-indigo-900/90 text-indigo-300 border-indigo-500/50 shadow-indigo-900/30'
+                : 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-400/40 shadow-indigo-600/30'
+            }`}
+            title={isChatOpen ? '우측 AI 코치 패널 접기' : '우측에 AI 코치 Q&A 패널 열기'}
           >
             <HelpCircle className="w-4 h-4" />
-            <span>AI 코치 질문</span>
+            <span>{isChatOpen ? 'AI 코치 패널 접기' : 'AI 코치 질문 (우측 열기)'}</span>
           </button>
         </div>
       </div>
@@ -120,8 +127,8 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
       {/* Main Spacious 3-Column Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-stretch">
         {/* Card 1: Hand Strength, Equity & Math Breakdown */}
-        <div className="flex flex-col justify-between bg-slate-950/70 p-4 rounded-2xl border border-slate-800/90 gap-3">
-          <div className="flex items-center justify-between border-b border-slate-800/60 pb-2">
+        <div className="flex flex-col justify-start bg-slate-950/70 p-4 rounded-2xl border border-slate-800/90 gap-3">
+          <div className="flex items-center justify-between border-b border-slate-800/60 pb-2 shrink-0">
             <div className="flex items-center gap-1.5 text-xs font-bold text-slate-300">
               <Calculator className="w-4 h-4 text-indigo-400" />
               <span>실시간 승률 & 기대값</span>
@@ -183,8 +190,8 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
         </div>
 
         {/* Card 2: Aiming Target Hands & Actual Winning Outs Cards */}
-        <div className="flex flex-col justify-between bg-slate-950/70 p-4 rounded-2xl border border-slate-800/90 gap-3">
-          <div className="flex items-center justify-between border-b border-slate-800/60 pb-2">
+        <div className="flex flex-col justify-start bg-slate-950/70 p-4 rounded-2xl border border-slate-800/90 gap-3">
+          <div className="flex items-center justify-between border-b border-slate-800/60 pb-2 shrink-0">
             <div className="flex items-center gap-1.5 text-xs font-bold text-slate-300">
               <Target className="w-4 h-4 text-amber-400" />
               <span>노리는 핸드 & 이기는 카드 (Outs)</span>
@@ -243,7 +250,7 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
           </div>
 
           {/* Actual Visual Cards for each Outs Group with expandable view */}
-          <div className="flex-1 flex flex-col gap-2.5 overflow-y-auto max-h-[200px] pr-1">
+          <div className="flex-1 flex flex-col gap-2.5 overflow-y-auto max-h-[180px] pr-1">
             {outsGroups.length > 0 ? (
               (showAllOuts ? outsGroups : outsGroups.slice(0, 1)).map((group, gIdx) => (
                 <motion.div
@@ -294,7 +301,7 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
 
           {/* Quick hit percentage summary */}
           {equityData.outsCount > 0 && (
-            <div className="pt-2 border-t border-slate-800/70 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+            <div className="pt-2 border-t border-slate-800/70 flex items-center justify-between text-[11px] text-slate-400 font-mono shrink-0">
               <span>다음 턴/리버 역전 확률:</span>
               <span className="text-emerald-400 font-bold">
                 약 {Math.min(99, Math.round(equityData.outsCount * 2.1))}%
@@ -304,8 +311,8 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
         </div>
 
         {/* Card 3: AI Strategy & GTO Recommendation */}
-        <div className="flex flex-col justify-between bg-slate-950/70 p-4 rounded-2xl border border-slate-800/90 gap-3">
-          <div className="flex items-center justify-between border-b border-slate-800/60 pb-2">
+        <div className="flex flex-col justify-start bg-slate-950/70 p-4 rounded-2xl border border-slate-800/90 gap-3">
+          <div className="flex items-center justify-between border-b border-slate-800/60 pb-2 shrink-0">
             <div className="flex items-center gap-1.5 text-xs font-bold text-slate-300">
               <Sparkles className="w-4 h-4 text-amber-400" />
               <span>GTO 솔버 & AI 전략 조언</span>
@@ -318,16 +325,16 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
           </div>
 
           {isLoadingCoach ? (
-            <div className="h-full min-h-[140px] flex flex-col items-center justify-center text-center gap-2">
+            <div className="flex-1 min-h-[140px] flex flex-col items-center justify-center text-center gap-2">
               <Sparkles className="w-7 h-7 text-amber-400 animate-spin" />
               <div className="text-xs font-semibold text-slate-300">Gemini 3.7 실시간 최적 전략 연산 중...</div>
               <p className="text-[11px] text-slate-500">포지션, SPR, 상대 성향 및 레인지 우위 계산</p>
             </div>
           ) : coachAdvice ? (
             <div className="flex flex-col gap-2.5">
-              {/* Action Banner */}
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-slate-400 font-semibold">AI 추천 액션:</span>
+              {/* Action Banner - Always anchored right below header */}
+              <div className="flex items-center justify-between bg-slate-900/80 px-3 py-2 rounded-xl border border-slate-800/80">
+                <span className="text-xs text-slate-300 font-semibold">AI 추천 액션:</span>
                 <span
                   className={`px-3 py-1 text-xs font-black rounded-xl border font-mono tracking-wide shadow ${getActionColor(
                     coachAdvice.action
@@ -363,7 +370,7 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
               )}
             </div>
           ) : (
-            <div className="h-full min-h-[140px] flex flex-col items-center justify-center text-center gap-2 text-slate-400">
+            <div className="flex-1 min-h-[140px] flex flex-col items-center justify-center text-center gap-2 text-slate-400">
               <Brain className="w-7 h-7 text-slate-600" />
               <div className="text-xs font-semibold text-slate-300">핸드 진행 시 실시간 전략이 가동됩니다.</div>
               <button
