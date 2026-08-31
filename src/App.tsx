@@ -349,10 +349,27 @@ export default function App() {
       const totalPot = pots.reduce((sum, p) => sum + p.amount, 0);
       const toCall = Math.max(0, currentHighestBet - hero.currentBet);
 
-      const eq = calculateLiveEquity(hero.cards, communityCards, activeCount, totalPot, toCall, 350);
+      // Fast synchronous real-time equity & outs calculation
+      const eq = calculateLiveEquity(hero.cards, communityCards, activeCount, totalPot, toCall, 250);
       setEquityData(eq);
+
+      // Immediate local GTO advice fallback so HUD updates instantly
+      const instantGTO = generateClientGTOAdvice({
+        heroCards: hero.cards,
+        communityCards,
+        street: bettingRound,
+        potSize: totalPot,
+        currentBet: currentHighestBet,
+        toCall,
+        position: hero.position,
+        heroChips: hero.chips,
+        activeOpponents: activeCount,
+        calculatedEquity: eq.winRate,
+        potOdds: eq.potOdds,
+      });
+      setCoachAdvice(prev => (prev ? { ...prev, ...instantGTO, confidence: prev.confidence || instantGTO.confidence } : instantGTO));
     }
-  }, [players, communityCards, currentHighestBet, pots]);
+  }, [players, communityCards, currentHighestBet, pots, bettingRound]);
 
   // Assign Positions according to dealer button
   const assignPositions = (tablePlayers: Player[], dealerIdx: number): Player[] => {
@@ -974,37 +991,39 @@ export default function App() {
         {viewMode === 'table' || viewMode === 'headsup' ? (
           /* Live Poker Felt Table View */
           <div className="flex flex-col gap-4">
-            {/* The Poker Felt Table */}
-            <PokerTable
-              players={players}
-              communityCards={communityCards}
-              pots={pots}
-              currentTurnPlayerId={currentTurnPlayerId}
-              dealerSeatIndex={dealerSeatIndex}
-              bettingRound={bettingRound}
-              isHandActive={isHandActive}
-              winners={winners}
-              heroBestHand={
-                heroPlayer && heroPlayer.cards.length === 2
-                  ? evaluateHand([...heroPlayer.cards, ...communityCards])
-                  : null
-              }
-              useFourColor={useFourColor}
-              showAiCards={showAiCards}
-              gameSpeed={gameSpeed}
-              isHeadsUpMode={isHeadsUpMode}
-              onNextHand={startNewHand}
-              onRebuyChips={handleRebuyChips}
-              onToggleAiCards={() => setShowAiCards(!showAiCards)}
-              onChangeGameSpeed={setGameSpeed}
-              onOpenHandReview={() => setIsHandReviewOpen(true)}
-              hasHandHistoryToReview={handHistory.length > 0}
-            />
+            {/* Upper Area: Left Poker Table + Right Vertical Betting Controls */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
+              {/* Left Column: The Poker Felt Table */}
+              <div className="lg:col-span-8 xl:col-span-9 flex flex-col">
+                <PokerTable
+                  players={players}
+                  communityCards={communityCards}
+                  pots={pots}
+                  currentTurnPlayerId={currentTurnPlayerId}
+                  dealerSeatIndex={dealerSeatIndex}
+                  bettingRound={bettingRound}
+                  isHandActive={isHandActive}
+                  winners={winners}
+                  heroBestHand={
+                    heroPlayer && heroPlayer.cards.length === 2
+                      ? evaluateHand([...heroPlayer.cards, ...communityCards])
+                      : null
+                  }
+                  useFourColor={useFourColor}
+                  showAiCards={showAiCards}
+                  gameSpeed={gameSpeed}
+                  isHeadsUpMode={isHeadsUpMode}
+                  onNextHand={startNewHand}
+                  onRebuyChips={handleRebuyChips}
+                  onToggleAiCards={() => setShowAiCards(!showAiCards)}
+                  onChangeGameSpeed={setGameSpeed}
+                  onOpenHandReview={() => setIsHandReviewOpen(true)}
+                  hasHandHistoryToReview={handHistory.length > 0}
+                />
+              </div>
 
-            {/* Bottom Panel: Interactive Betting Controls + AI Coach HUD */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-              {/* Betting Controls (7 cols on large) */}
-              <div className="lg:col-span-7">
+              {/* Right Column: Vertical Interactive Betting Controls */}
+              <div className="lg:col-span-4 xl:col-span-3 flex flex-col justify-stretch">
                 <BettingControls
                   isHeroTurn={isHeroTurn}
                   canCheck={canCheck}
@@ -1019,19 +1038,20 @@ export default function App() {
                   recommendedAmount={coachAdvice?.suggestedAmount}
                 />
               </div>
+            </div>
 
-              {/* AI Coach HUD & Real-time Math (5 cols on large) */}
-              <div className="lg:col-span-5">
-                <AICoachPanel
-                  equityData={equityData}
-                  coachAdvice={coachAdvice}
-                  isLoadingCoach={isLoadingCoach}
-                  onRefreshCoachAdvice={() => fetchCoachAdvice(true)}
-                  onOpenChatModal={() => setIsCoachChatOpen(true)}
-                  isHeroTurn={isHeroTurn}
-                  toCall={toCall}
-                />
-              </div>
+            {/* Lower Area: Full-Width AI Coach & Real-time Math HUD */}
+            <div className="w-full">
+              <AICoachPanel
+                equityData={equityData}
+                coachAdvice={coachAdvice}
+                isLoadingCoach={isLoadingCoach}
+                onRefreshCoachAdvice={() => fetchCoachAdvice(true)}
+                onOpenChatModal={() => setIsCoachChatOpen(true)}
+                isHeroTurn={isHeroTurn}
+                toCall={toCall}
+                useFourColor={useFourColor}
+              />
             </div>
           </div>
         ) : viewMode === 'range_chart' ? (

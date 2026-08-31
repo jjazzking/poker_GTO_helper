@@ -118,6 +118,15 @@ export interface HandHistoryItem {
   scoreGrade?: 'A+' | 'A' | 'B' | 'C' | 'D' | 'F';
 }
 
+export interface OutsGroup {
+  targetHand: string; // e.g. "플러시 (Flush)"
+  targetKorean: string;
+  outsCount: number;
+  cards: Card[];
+  nextStreetProb: number; // e.g. 19.1%
+  riverProb?: number; // e.g. 35.0%
+}
+
 export interface LiveEquityData {
   winRate: number; // 0 - 100%
   tieRate: number; // 0 - 100%
@@ -127,6 +136,10 @@ export interface LiveEquityData {
   outsCount: number;
   drawTypes: string[];
   handStrengthDesc: string;
+  outsGroups?: OutsGroup[];
+  winningCards?: Card[];
+  equityExplanation?: string;
+  aimingHandSummary?: string;
 }
 
 export interface CoachAdvice {

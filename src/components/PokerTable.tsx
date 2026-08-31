@@ -153,16 +153,16 @@ export const PokerTable: React.FC<PokerTableProps> = ({
       </div>
 
       {/* The Felt Table Canvas Area */}
-      <div className="relative w-full max-w-4xl h-[460px] sm:h-[500px] rounded-[140px] sm:rounded-[180px] p-4 flex items-center justify-center select-none shadow-2xl overflow-hidden border-[12px] border-amber-950 bg-slate-950">
+      <div className="relative w-full h-[460px] sm:h-[500px] rounded-[100px] sm:rounded-[140px] p-4 flex items-center justify-center select-none shadow-2xl overflow-hidden border-[10px] sm:border-[12px] border-amber-950 bg-slate-950">
         {/* Felt Outer Shadow & Texture */}
         <div
-          className="absolute inset-0 rounded-[128px] sm:rounded-[168px] border-4 border-emerald-950/80 shadow-inner flex items-center justify-center overflow-hidden"
+          className="absolute inset-0 rounded-[90px] sm:rounded-[128px] border-4 border-emerald-950/80 shadow-inner flex items-center justify-center overflow-hidden"
           style={{
             background: 'radial-gradient(ellipse at center, #065f46 0%, #044e3a 55%, #022c22 100%)',
           }}
         >
           {/* Subtle table watermarked felt line */}
-          <div className="w-[82%] h-[74%] rounded-[100px] border border-emerald-400/15 pointer-events-none" />
+          <div className="w-[82%] h-[74%] rounded-[70px] sm:rounded-[100px] border border-emerald-400/15 pointer-events-none" />
         </div>
 
         {/* Central Poker Board Area */}

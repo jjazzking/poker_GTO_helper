@@ -1,4 +1,4 @@
-import { Card, EvaluatedHand, HandRank, Rank, Suit, Player, Pot, LiveEquityData, Position, ActionType, AIPersonalityId } from '../types/poker';
+import { Card, EvaluatedHand, HandRank, Rank, Suit, Player, Pot, LiveEquityData, Position, ActionType, AIPersonalityId, OutsGroup } from '../types/poker';
 
 export const SUITS: Suit[] = ['spades', 'hearts', 'diamonds', 'clubs'];
 export const RANKS: Rank[] = ['2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A'];
@@ -307,67 +307,226 @@ export function evaluateHand(cards: Card[]): EvaluatedHand {
 }
 
 // Calculate Outs & Draws
-export function calculateOuts(heroHole: Card[], community: Card[]): { count: number; drawTypes: string[] } {
-  if (community.length < 3 || community.length >= 5) {
-    return { count: 0, drawTypes: [] };
+// Calculate Detailed Outs, Target Hands, and Probabilities
+export function calculateOuts(heroHole: Card[], community: Card[]): {
+  count: number;
+  drawTypes: string[];
+  outsGroups: OutsGroup[];
+  winningCards: Card[];
+  aimingSummary: string;
+} {
+  if (community.length < 3) {
+    // Preflop targets
+    if (heroHole.length === 2) {
+      const isPair = heroHole[0].rank === heroHole[1].rank;
+      const isSuited = heroHole[0].suit === heroHole[1].suit;
+      let aiming = '플랍에서 셋/탑페어 및 드로우 형성을 노립니다.';
+      if (isPair) {
+        aiming = `포켓 ${heroHole[0].rank} 페어로 플랍에서 셋(트리플, 11.8%) 및 오버페어를 노립니다.`;
+      } else if (isSuited) {
+        aiming = `수딧 핸드로 플랍에서 탑페어 및 플러시 드로우(11%) 형성을 노립니다.`;
+      } else {
+        aiming = `브로드웨이/하이 카드로 플랍 탑페어(32%) 및 스트레이트 드로우를 노립니다.`;
+      }
+      return { count: 0, drawTypes: ['프리플랍 진행 중'], outsGroups: [], winningCards: [], aimingSummary: aiming };
+    }
+    return { count: 0, drawTypes: [], outsGroups: [], winningCards: [], aimingSummary: '핸드 시작 대기' };
+  }
+
+  if (community.length >= 5) {
+    const made = evaluateHand([...heroHole, ...community]);
+    return {
+      count: 0,
+      drawTypes: ['쇼다운 (메이드 완료)'],
+      outsGroups: [],
+      winningCards: [],
+      aimingSummary: `최종 메이드: ${made.description}`,
+    };
   }
 
   const allAvailable = createDeck().filter(
     c => !heroHole.some(h => h.id === c.id) && !community.some(b => b.id === c.id)
   );
+  const remainingCount = allAvailable.length; // 47 on flop, 46 on turn
 
-  const currentRank = evaluateHand([...heroHole, ...community]).rank;
-  const drawTypes: string[] = [];
-  const winningOutCards = new Set<string>();
+  const currentEval = evaluateHand([...heroHole, ...community]);
+  const currentRank = currentEval.rank;
 
-  // Suit count for flush draw
+  const flushCards: Card[] = [];
+  const straightCards: Card[] = [];
+  const tripsCards: Card[] = [];
+  const twoPairCards: Card[] = [];
+  const fullHouseCards: Card[] = [];
+  const quadsCards: Card[] = [];
+  const topPairCards: Card[] = [];
+
+  const uniqueWinningCards = new Map<string, Card>();
+
+  // Check suit counts for flush
   const suitCounts: Record<Suit, number> = { spades: 0, hearts: 0, diamonds: 0, clubs: 0 };
   [...heroHole, ...community].forEach(c => suitCounts[c.suit]++);
 
+  let flushSuit: Suit | null = null;
   for (const s of SUITS) {
     if (suitCounts[s] === 4) {
-      drawTypes.push('플러시 드로우 (9 Outs)');
-      allAvailable.filter(c => c.suit === s).forEach(c => winningOutCards.add(c.id));
+      flushSuit = s;
+      break;
     }
   }
 
-  // Test every remaining card
-  let straightOutsCount = 0;
+  const boardMaxRankVal = Math.max(...community.map(c => RANK_VALUES[c.rank]));
+
   for (const card of allAvailable) {
     const nextHand = evaluateHand([...heroHole, ...community, card]);
-    if (nextHand.rank === HandRank.STRAIGHT && currentRank < HandRank.STRAIGHT) {
-      straightOutsCount++;
-      winningOutCards.add(card.id);
+
+    // Did this single card improve hand rank over current?
+    if (nextHand.rank > currentRank) {
+      uniqueWinningCards.set(card.id, card);
+
+      if (nextHand.rank === HandRank.ROYAL_FLUSH || nextHand.rank === HandRank.STRAIGHT_FLUSH || nextHand.rank === HandRank.FLUSH) {
+        if (flushSuit && card.suit === flushSuit) {
+          flushCards.push(card);
+        }
+      } else if (nextHand.rank === HandRank.FOUR_OF_A_KIND) {
+        quadsCards.push(card);
+      } else if (nextHand.rank === HandRank.FULL_HOUSE) {
+        fullHouseCards.push(card);
+      } else if (nextHand.rank === HandRank.STRAIGHT) {
+        straightCards.push(card);
+      } else if (nextHand.rank === HandRank.THREE_OF_A_KIND) {
+        tripsCards.push(card);
+      } else if (nextHand.rank === HandRank.TWO_PAIR) {
+        twoPairCards.push(card);
+      } else if (nextHand.rank === HandRank.ONE_PAIR) {
+        if (heroHole.some(h => h.rank === card.rank && RANK_VALUES[h.rank] >= boardMaxRankVal)) {
+          topPairCards.push(card);
+        }
+      }
     }
   }
 
-  if (straightOutsCount >= 8) {
-    drawTypes.push('양방 스트레이트 드로우 (8 Outs)');
-  } else if (straightOutsCount >= 4) {
-    drawTypes.push('것샷 스트레이트 드로우 (4 Outs)');
+  const outsGroups: OutsGroup[] = [];
+  const drawTypes: string[] = [];
+
+  const calcProb = (outs: number) => {
+    if (outs <= 0) return { next: 0, river: 0 };
+    const nextProb = Number(((outs / remainingCount) * 100).toFixed(1));
+    let riverProb = nextProb;
+    if (community.length === 3) {
+      // 2 cards to come (Flop -> River)
+      const missNext = (remainingCount - outs) / remainingCount;
+      const missRiver = (remainingCount - 1 - outs) / (remainingCount - 1);
+      riverProb = Number(((1 - missNext * missRiver) * 100).toFixed(1));
+    }
+    return { next: nextProb, river: riverProb };
+  };
+
+  if (flushCards.length > 0) {
+    const prob = calcProb(flushCards.length);
+    outsGroups.push({
+      targetHand: '플러시 (Flush)',
+      targetKorean: '플러시 완성',
+      outsCount: flushCards.length,
+      cards: flushCards,
+      nextStreetProb: prob.next,
+      riverProb: prob.river,
+    });
+    drawTypes.push(`플러시 드로우 (${flushCards.length} Outs - ${prob.next}%)`);
   }
 
-  // Overcard outs if we have high cards
-  const boardMax = Math.max(...community.map(c => RANK_VALUES[c.rank]));
-  const heroOvercards = heroHole.filter(c => RANK_VALUES[c.rank] > boardMax);
-  if (heroOvercards.length > 0 && currentRank === HandRank.HIGH_CARD) {
-    drawTypes.push(`오버카드 드로우 (${heroOvercards.length * 3} Outs)`);
+  if (straightCards.length > 0) {
+    const prob = calcProb(straightCards.length);
+    const label = straightCards.length >= 8 ? '양방 스트레이트 드로우' : '것샷 스트레이트 드로우';
+    outsGroups.push({
+      targetHand: '스트레이트 (Straight)',
+      targetKorean: '스트레이트 넛/완성',
+      outsCount: straightCards.length,
+      cards: straightCards,
+      nextStreetProb: prob.next,
+      riverProb: prob.river,
+    });
+    drawTypes.push(`${label} (${straightCards.length} Outs - ${prob.next}%)`);
+  }
+
+  if (fullHouseCards.length > 0 || quadsCards.length > 0) {
+    const monsterCards = [...fullHouseCards, ...quadsCards];
+    const prob = calcProb(monsterCards.length);
+    outsGroups.push({
+      targetHand: '풀하우스 / 포카드',
+      targetKorean: '풀하우스/포카드 몬스터',
+      outsCount: monsterCards.length,
+      cards: monsterCards,
+      nextStreetProb: prob.next,
+      riverProb: prob.river,
+    });
+    drawTypes.push(`풀하우스/포카드 드로우 (${monsterCards.length} Outs)`);
+  }
+
+  if (tripsCards.length > 0) {
+    const prob = calcProb(tripsCards.length);
+    outsGroups.push({
+      targetHand: '트리플 / 셋 (Trips/Set)',
+      targetKorean: '트리플/셋 강화',
+      outsCount: tripsCards.length,
+      cards: tripsCards,
+      nextStreetProb: prob.next,
+      riverProb: prob.river,
+    });
+    drawTypes.push(`트리플/셋 아웃츠 (${tripsCards.length} Outs)`);
+  }
+
+  if (twoPairCards.length > 0) {
+    const prob = calcProb(twoPairCards.length);
+    outsGroups.push({
+      targetHand: '투 페어 (Two Pair)',
+      targetKorean: '투 페어 발전',
+      outsCount: twoPairCards.length,
+      cards: twoPairCards,
+      nextStreetProb: prob.next,
+      riverProb: prob.river,
+    });
+    drawTypes.push(`투 페어 아웃츠 (${twoPairCards.length} Outs)`);
+  }
+
+  if (topPairCards.length > 0 && currentRank === HandRank.HIGH_CARD) {
+    const prob = calcProb(topPairCards.length);
+    outsGroups.push({
+      targetHand: '탑 페어 (Top Pair)',
+      targetKorean: '탑 페어로 발전',
+      outsCount: topPairCards.length,
+      cards: topPairCards,
+      nextStreetProb: prob.next,
+      riverProb: prob.river,
+    });
+    drawTypes.push(`탑 페어 아웃츠 (${topPairCards.length} Outs)`);
+  }
+
+  // Aiming summary synthesis
+  let aimingSummary = '';
+  if (outsGroups.length > 0) {
+    const topTargets = outsGroups.map(g => `${g.targetKorean} (${g.outsCount}장)`).join(' + ');
+    aimingSummary = `🎯 목표: ${topTargets} (총 ${uniqueWinningCards.size} Outs)`;
+  } else {
+    aimingSummary = `현재 ${currentEval.description} 메이드 상태 유지`;
   }
 
   return {
-    count: winningOutCards.size,
-    drawTypes: drawTypes.length > 0 ? drawTypes : ['메이드 핸드 완료/발전 기회'],
+    count: uniqueWinningCards.size,
+    drawTypes: drawTypes.length > 0 ? drawTypes : ['메이드 완료'],
+    outsGroups,
+    winningCards: Array.from(uniqueWinningCards.values()),
+    aimingSummary,
   };
 }
 
-// Fast Monte Carlo Equity Calculation
+// Fast Monte Carlo Equity Calculation with Instant Reasoning
 export function calculateLiveEquity(
   heroHole: Card[],
   community: Card[],
   activeOpponentCount: number,
   potSize: number,
   callAmount: number,
-  trials = 400
+  trials = 300
 ): LiveEquityData {
   if (heroHole.length !== 2) {
     return {
@@ -379,6 +538,10 @@ export function calculateLiveEquity(
       outsCount: 0,
       drawTypes: [],
       handStrengthDesc: '카드 없음',
+      outsGroups: [],
+      winningCards: [],
+      equityExplanation: '핸드 카드가 주어지면 승률 분석이 시작됩니다.',
+      aimingHandSummary: '대기 중',
     };
   }
 
@@ -394,11 +557,9 @@ export function calculateLiveEquity(
   const numOpponents = Math.max(1, activeOpponentCount);
 
   for (let t = 0; t < trials; t++) {
-    // Shuffle remaining deck copy
     const simDeck = shuffleDeck(remainingDeck);
     let deckIdx = 0;
 
-    // Deal community cards up to 5
     const neededBoardCards = 5 - community.length;
     const simBoard = [...community];
     for (let b = 0; b < neededBoardCards; b++) {
@@ -431,7 +592,7 @@ export function calculateLiveEquity(
     }
   }
 
-  const winRate = Math.round((wins / trials) * 100);
+  const rawWinRate = Math.round((wins / trials) * 100);
   const tieRate = Math.round((ties / trials) * 100);
   const totalEquity = Math.round(((wins + ties * 0.5) / trials) * 100);
 
@@ -447,6 +608,22 @@ export function calculateLiveEquity(
     isPositiveEV = totalEquity >= requiredEquity;
   }
 
+  // Synthesize crystal-clear Korean explanation of why win rate is what it is
+  let equityExplanation = '';
+  if (community.length === 0) {
+    equityExplanation = `프리플랍 ${heroHole[0].rank}${heroHole[1].rank} 핸드로 상대 ${numOpponents}명 대상 기본 에쿼티 ${totalEquity}%입니다.`;
+  } else if (community.length === 5) {
+    equityExplanation = `리버 완성 핸드 [${currentEval.description}]입니다. 쇼다운 승률 ${totalEquity}%로 판정됩니다.`;
+  } else {
+    const outsMsg = outsInfo.count > 0 
+      ? `총 ${outsInfo.count}장의 역전/발전 아웃츠가 있어` 
+      : '현재 메이드 핸드가 강력하여';
+    const evMsg = callAmount > 0 
+      ? (isPositiveEV ? `(필요 오즈 ${potOdds}% 대비 +EV 수익적 콜)` : `(필요 오즈 ${potOdds}% 대비 -EV 위험 구간)`)
+      : '';
+    equityExplanation = `현재 [${currentEval.description}] 상태이며, ${outsMsg} 상대 ${numOpponents}명의 추정 레인지 대비 ${totalEquity}%의 에쿼티를 보유합니다. ${evMsg}`;
+  }
+
   return {
     winRate: totalEquity,
     tieRate,
@@ -456,6 +633,10 @@ export function calculateLiveEquity(
     outsCount: outsInfo.count,
     drawTypes: outsInfo.drawTypes,
     handStrengthDesc: currentEval.description,
+    outsGroups: outsInfo.outsGroups,
+    winningCards: outsInfo.winningCards,
+    equityExplanation,
+    aimingHandSummary: outsInfo.aimingSummary,
   };
 }
 
