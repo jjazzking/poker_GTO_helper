@@ -48,8 +48,28 @@ export function generateClientGTOAdvice(params: {
   let bluffPercent = 15;
   let valuePercent = 85;
 
+  const shortfall = potOdds - calculatedEquity;
+
+  // Facing a bet, whether to fold is a pot-odds question and nothing else: a
+  // cheap call can be +EV with a weak hand, and an expensive one can be -EV with
+  // a strong one. So the comparison happens once, here, for every equity level.
+  // The bands below only decide how aggressive the non-fold line is; none of
+  // them may fold on absolute hand strength alone.
+  if (!isChecked && calculatedEquity < potOdds) {
+    action = 'FOLD';
+    confidence = shortfall >= 15 ? 90 : 70;
+    valuePercent = 20;
+    bluffPercent = 80;
+    summary = `콜 가격이 비쌉니다. 필요 승률 ${potOdds}% 대비 실제 승률이 ${calculatedEquity}%로 ${shortfall}%p 부족한 -EV 상황입니다.`;
+    reasoning.push(`$${toCall.toLocaleString()} 콜은 최종 팟의 ${potOdds}%를 부담하는 것이므로 최소 ${potOdds}%의 승률이 필요합니다.`);
+    reasoning.push(`현재 승률 ${calculatedEquity}%로는 이 가격에 반복해서 콜할 경우 장기 손실이 누적됩니다.`);
+    if (shortfall <= 5) {
+      reasoning.push('다만 차이가 크지 않아, 임플라이드 오즈(완성 시 추가 수익)가 크다면 콜도 검토 가능한 경계 스팟입니다.');
+    }
+    gtoConcept = 'Pot Odds Discipline: 가격이 맞지 않는 콜의 수학적 손절';
+  }
   // 1. High Equity (Monster / Dominant Made Hand)
-  if (calculatedEquity >= 68) {
+  else if (calculatedEquity >= 68) {
     confidence = 92;
     valuePercent = 90;
     bluffPercent = 10;
@@ -62,22 +82,20 @@ export function generateClientGTOAdvice(params: {
       reasoning.push(`에쿼티가 ${calculatedEquity}%로 상대 레인지를 크게 앞서고 있습니다.`);
       reasoning.push('상대의 미들 페어 및 드로우 핸드로부터 최대 밸류를 추출하기 위한 벳입니다.');
       gtoConcept = 'GTO 밸류 베팅 원칙: 강한 핸드로 팟을 선제적으로 키워 EV를 극대화';
+    } else if (calculatedEquity >= 80) {
+      action = 'RAISE';
+      suggestedAmount = Math.round(currentBet * 2.5);
+      summary = '최상위 몬스터 핸드입니다. 리레이즈로 주도권을 잡고 상대의 칩을 압박하세요.';
+      reasoning.push(`승률 ${calculatedEquity}%로 넛(Nut)에 가까운 강한 핸드입니다.`);
+      reasoning.push('상대의 베팅에 밸류 레이즈로 응수하여 팟을 극대화합니다.');
+      gtoConcept = 'Polarized Range Value Raise: 상대의 콜 레인지를 타겟팅한 리레이즈';
     } else {
-      if (calculatedEquity >= 80) {
-        action = 'RAISE';
-        suggestedAmount = Math.round(currentBet * 2.5);
-        summary = '최상위 몬스터 핸드입니다. 리레이즈로 주도권을 잡고 상대의 칩을 압박하세요.';
-        reasoning.push(`승률 ${calculatedEquity}%로 넛(Nut)에 가까운 강한 핸드입니다.`);
-        reasoning.push('상대의 베팅에 밸류 레이즈로 응수하여 팟을 극대화합니다.');
-        gtoConcept = 'Polarized Range Value Raise: 상대의 콜 레인지를 타겟팅한 리레이즈';
-      } else {
-        action = toCall > potSize * 0.8 ? 'CALL' : 'RAISE';
-        suggestedAmount = action === 'RAISE' ? Math.round(currentBet * 2.2) : 0;
-        summary = '우수한 승률을 보유하고 있어 적극적인 레이즈 또는 팟 컨트롤 콜이 유효합니다.';
-        reasoning.push(`에쿼티 ${calculatedEquity}%로 승산이 매우 높습니다.`);
-        reasoning.push(`팟 오즈 요구치(${potOdds}%)를 크게 상회하는 절대적 +EV 상황입니다.`);
-        gtoConcept = 'Linear Value Line: 높은 승률 기반의 적극적 액션 전개';
-      }
+      action = toCall > potSize * 0.8 ? 'CALL' : 'RAISE';
+      suggestedAmount = action === 'RAISE' ? Math.round(currentBet * 2.2) : 0;
+      summary = '우수한 승률을 보유하고 있어 적극적인 레이즈 또는 팟 컨트롤 콜이 유효합니다.';
+      reasoning.push(`에쿼티 ${calculatedEquity}%로 승산이 매우 높습니다.`);
+      reasoning.push(`팟 오즈 요구치(${potOdds}%)를 크게 상회하는 절대적 +EV 상황입니다.`);
+      gtoConcept = 'Linear Value Line: 높은 승률 기반의 적극적 액션 전개';
     }
   }
   // 2. Strong / Medium-High Equity (Good Made Hand or Strong Draw)
@@ -101,20 +119,19 @@ export function generateClientGTOAdvice(params: {
         reasoning.push('상대의 체크-레이즈 위험을 방지하고 다음 카드를 확인합니다.');
         gtoConcept = 'Pot Control & Showdown Value: 중위권 핸드의 분산 최소화 전략';
       }
+    } else if (calculatedEquity >= potOdds + 25 && toCall <= potSize * 0.5) {
+      action = 'RAISE';
+      suggestedAmount = Math.round(currentBet * 2.2);
+      summary = `승률(${calculatedEquity}%)이 필요 오즈(${potOdds}%)를 크게 앞서고 콜 가격도 저렴해, 밸류 레이즈로 팟을 키우는 편이 콜보다 EV가 높습니다.`;
+      reasoning.push(`요구 승률 ${potOdds}% 대비 실제 승률 ${calculatedEquity}%로 여유가 큽니다.`);
+      reasoning.push('단순 콜로 팟을 정체시키기보다 레이즈로 밸류를 추가 확보합니다.');
+      gtoConcept = 'Value Raise with Equity Surplus: 에쿼티 잉여분을 팟 사이즈로 전환';
     } else {
-      if (calculatedEquity >= potOdds) {
-        action = 'CALL';
-        summary = `팟 오즈 요구치(${potOdds}%)보다 에쿼티(${calculatedEquity}%)가 높아 수학적으로 확실한 +EV 콜입니다.`;
-        reasoning.push(`요구 승률 ${potOdds}% 대비 실제 승률 ${calculatedEquity}%로 롱런 시 확실한 수익 발생.`);
-        reasoning.push('상대의 블러프 레인지를 캐치하거나 쇼다운에서 승리를 노립니다.');
-        gtoConcept = 'Pot Odds & MDF (Minimum Defense Frequency) 준수';
-      } else {
-        action = 'FOLD';
-        summary = `에쿼티(${calculatedEquity}%)가 팟 오즈 요구치(${potOdds}%)에 미치지 못하므로 수학적 폴드가 정석입니다.`;
-        reasoning.push(`요구 승률: ${potOdds}%, 현재 승률: ${calculatedEquity}% (기대값 -EV)`);
-        reasoning.push('불리한 가격에 무리하게 따라가지 않는 것이 장기 수익의 핵심입니다.');
-        gtoConcept = 'Discipline & Fold Discipline: 역배당 상황에서의 수학적 손절';
-      }
+      action = 'CALL';
+      summary = `팟 오즈 요구치(${potOdds}%)보다 에쿼티(${calculatedEquity}%)가 높아 수학적으로 확실한 +EV 콜입니다.`;
+      reasoning.push(`요구 승률 ${potOdds}% 대비 실제 승률 ${calculatedEquity}%로 롱런 시 확실한 수익 발생.`);
+      reasoning.push('상대의 블러프 레인지를 캐치하거나 쇼다운에서 승리를 노립니다.');
+      gtoConcept = 'Pot Odds & MDF (Minimum Defense Frequency) 준수';
     }
   }
   // 3. Speculative / Draw / Bluffing Equity (30% ~ 49%)
@@ -138,24 +155,18 @@ export function generateClientGTOAdvice(params: {
         gtoConcept = 'Realizing Equity for Free: 드로우 핸드의 무료 에쿼티 실현';
       }
     } else {
-      if (calculatedEquity >= potOdds) {
-        action = 'CALL';
-        summary = `오즈가 충족되어 드로우 콜이 정당화됩니다 (승률 ${calculatedEquity}% >= 팟 오즈 ${potOdds}%).`;
-        reasoning.push('추가 팟 잠재 수익(Implied Odds)을 감안할 때 콜이 유리합니다.');
-        gtoConcept = 'Implied Odds & Pot Odds Synergy';
-      } else {
-        action = 'FOLD';
-        summary = '드로우 완성 확률에 비해 상대의 베팅 가격이 너무 비쌉니다 (-EV).';
-        reasoning.push(`요구 승률(${potOdds}%)에 비해 현재 승률(${calculatedEquity}%)이 부족합니다.`);
-        gtoConcept = 'Chasing Draw Penalty: 배당이 나오지 않는 드로우 추격 방지';
-      }
+      action = 'CALL';
+      summary = `오즈가 충족되어 드로우 콜이 정당화됩니다 (승률 ${calculatedEquity}% >= 필요 오즈 ${potOdds}%).`;
+      reasoning.push(`요구 승률 ${potOdds}% 대비 실제 승률 ${calculatedEquity}%로 가격이 맞습니다.`);
+      reasoning.push('추가 팟 잠재 수익(Implied Odds)을 감안하면 더욱 유리합니다.');
+      gtoConcept = 'Implied Odds & Pot Odds Synergy';
     }
   }
   // 4. Low Equity / Weak Hands (< 30%)
   else {
-    confidence = 88;
-    valuePercent = 10;
-    bluffPercent = 90;
+    confidence = 76;
+    valuePercent = 15;
+    bluffPercent = 85;
 
     if (isChecked) {
       action = 'CHECK';
@@ -164,11 +175,11 @@ export function generateClientGTOAdvice(params: {
       reasoning.push('체크로 쇼다운에 도달하거나 상대 액션을 탐색하세요.');
       gtoConcept = 'Check Range Protection & Risk Aversion';
     } else {
-      action = 'FOLD';
-      summary = '약한 핸드로 상대의 베팅에 무리하게 대응하지 않고 폴드합니다.';
-      reasoning.push(`에쿼티(${calculatedEquity}%)가 팟 오즈(${potOdds}%)에 크게 미달합니다.`);
-      reasoning.push('손실을 최소화하고 다음 좋은 스팟을 기다리는 것이 프로의 정석입니다.');
-      gtoConcept = 'Disciplined Folding: 뱅크롤 보존을 위한 필수 덕목';
+      action = 'CALL';
+      summary = `핸드 자체는 약하지만 콜 비용이 저렴합니다. 필요 승률이 ${potOdds}%에 불과해 승률 ${calculatedEquity}%로도 +EV 콜입니다.`;
+      reasoning.push(`$${toCall.toLocaleString()} 콜의 요구 승률은 ${potOdds}%로, 현재 승률 ${calculatedEquity}%가 이를 상회합니다.`);
+      reasoning.push('절대 강도가 아니라 가격이 콜을 정당화하는 스팟입니다. 다음 스트리트에서 큰 베팅을 만나면 폴드할 준비를 하세요.');
+      gtoConcept = 'Price Over Strength: 핸드 강도가 아닌 가격이 결정하는 콜';
     }
   }
 
@@ -177,6 +188,8 @@ export function generateClientGTOAdvice(params: {
     action = 'RAISE';
     suggestedAmount = 50;
     summary = `${position} 포지션에서 오픈 레이즈(RFI)로 블라인드를 스틸하거나 팟을 주도하세요.`;
+    reasoning.length = 0;
+    reasoning.push(`에쿼티 ${calculatedEquity}%로 ${position}에서 오픈하기 충분한 레인지입니다.`);
     reasoning.push('프리플랍에서 림프(Limp) 대신 오픈 레이즈로 이니셔티브를 잡는 것이 정석입니다.');
     gtoConcept = 'Raise First In (RFI) Standard Range';
   }

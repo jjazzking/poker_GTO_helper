@@ -60,6 +60,137 @@ function combinations<T>(arr: T[], k: number): T[][] {
   return [...withHead, ...withoutHead];
 }
 
+// Precomputed 5-card index combinations. The equity simulation evaluates
+// millions of hands, so the combination lists are built once instead of being
+// reallocated on every call.
+const COMBO_INDICES: Record<number, number[][]> = {
+  6: combinations([0, 1, 2, 3, 4, 5], 5),
+  7: combinations([0, 1, 2, 3, 4, 5, 6], 5),
+};
+
+const POW15 = [1, 15, 225, 3375, 50625];
+
+// Scratch buffers reused by score5. Safe because score5 never yields or recurses.
+const sv = [0, 0, 0, 0, 0];
+const gv = [0, 0, 0, 0, 0];
+const gc = [0, 0, 0, 0, 0];
+
+// Single source of truth for hand scoring: HandRank * 100000000 + tie-breakers.
+// Returns only the comparable number, allocating nothing, so it is cheap enough
+// to call inside the Monte Carlo loop. evaluate5Cards builds the human-readable
+// fields on top of this score.
+export function score5(c0: Card, c1: Card, c2: Card, c3: Card, c4: Card): number {
+  sv[0] = RANK_VALUES[c0.rank];
+  sv[1] = RANK_VALUES[c1.rank];
+  sv[2] = RANK_VALUES[c2.rank];
+  sv[3] = RANK_VALUES[c3.rank];
+  sv[4] = RANK_VALUES[c4.rank];
+
+  // Insertion sort, descending
+  for (let i = 1; i < 5; i++) {
+    const v = sv[i];
+    let j = i - 1;
+    while (j >= 0 && sv[j] < v) {
+      sv[j + 1] = sv[j];
+      j--;
+    }
+    sv[j + 1] = v;
+  }
+
+  const suit = c0.suit;
+  const isFlush = c1.suit === suit && c2.suit === suit && c3.suit === suit && c4.suit === suit;
+
+  let isStraight = false;
+  let straightHigh = 0;
+  if (sv[0] - sv[1] === 1 && sv[1] - sv[2] === 1 && sv[2] - sv[3] === 1 && sv[3] - sv[4] === 1) {
+    isStraight = true;
+    straightHigh = sv[0];
+  } else if (sv[0] === 14 && sv[1] === 5 && sv[2] === 4 && sv[3] === 3 && sv[4] === 2) {
+    // Ace-low straight A-2-3-4-5 plays as a 5-high straight
+    isStraight = true;
+    straightHigh = 5;
+  }
+
+  if (isFlush && isStraight) {
+    const rank = straightHigh === 14 ? HandRank.ROYAL_FLUSH : HandRank.STRAIGHT_FLUSH;
+    return rank * 100000000 + straightHigh;
+  }
+
+  // Group equal values. sv is already descending, so equal values are adjacent
+  // and the groups come out value-descending before the count sort below.
+  let g = -1;
+  for (let i = 0; i < 5; i++) {
+    if (g >= 0 && gv[g] === sv[i]) {
+      gc[g]++;
+    } else {
+      g++;
+      gv[g] = sv[i];
+      gc[g] = 1;
+    }
+  }
+  const groupCount = g + 1;
+
+  // Reorder groups by count desc, then value desc
+  for (let i = 1; i < groupCount; i++) {
+    const v = gv[i];
+    const c = gc[i];
+    let j = i - 1;
+    while (j >= 0 && (gc[j] < c || (gc[j] === c && gv[j] < v))) {
+      gv[j + 1] = gv[j];
+      gc[j + 1] = gc[j];
+      j--;
+    }
+    gv[j + 1] = v;
+    gc[j + 1] = c;
+  }
+
+  if (gc[0] === 4) {
+    return HandRank.FOUR_OF_A_KIND * 100000000 + gv[0] * 100 + gv[1];
+  }
+  if (gc[0] === 3 && gc[1] === 2) {
+    return HandRank.FULL_HOUSE * 100000000 + gv[0] * 100 + gv[1];
+  }
+  if (isFlush) {
+    let score = HandRank.FLUSH * 100000000;
+    for (let i = 0; i < 5; i++) score += sv[i] * POW15[4 - i];
+    return score;
+  }
+  if (isStraight) {
+    return HandRank.STRAIGHT * 100000000 + straightHigh;
+  }
+  if (gc[0] === 3) {
+    return HandRank.THREE_OF_A_KIND * 100000000 + gv[0] * 10000 + gv[1] * 100 + gv[2];
+  }
+  if (gc[0] === 2 && gc[1] === 2) {
+    return HandRank.TWO_PAIR * 100000000 + gv[0] * 10000 + gv[1] * 100 + gv[2];
+  }
+  if (gc[0] === 2) {
+    return HandRank.ONE_PAIR * 100000000 + gv[0] * 1000000 + gv[1] * 10000 + gv[2] * 100 + gv[3];
+  }
+
+  let score = HandRank.HIGH_CARD * 100000000;
+  for (let i = 0; i < 5; i++) score += sv[i] * POW15[4 - i];
+  return score;
+}
+
+// Best achievable score from 5, 6, or 7 cards, without building the descriptive
+// EvaluatedHand object. Used by the equity simulation, which only compares scores.
+export function bestScore(cards: Card[]): number {
+  if (cards.length === 5) {
+    return score5(cards[0], cards[1], cards[2], cards[3], cards[4]);
+  }
+  const combos = COMBO_INDICES[cards.length];
+  if (!combos) return evaluateHand(cards).score;
+
+  let best = -1;
+  for (let i = 0; i < combos.length; i++) {
+    const c = combos[i];
+    const s = score5(cards[c[0]], cards[c[1]], cards[c[2]], cards[c[3]], cards[c[4]]);
+    if (s > best) best = s;
+  }
+  return best;
+}
+
 // Evaluate exactly 5 cards
 export function evaluate5Cards(cards: Card[]): EvaluatedHand {
   if (cards.length !== 5) {
@@ -72,6 +203,7 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
   const suits = sorted.map(c => c.suit);
 
   const isFlush = suits.every(s => s === suits[0]);
+  const score = score5(sorted[0], sorted[1], sorted[2], sorted[3], sorted[4]);
 
   // Check straight
   let isStraight = false;
@@ -117,7 +249,7 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
         rank: HandRank.ROYAL_FLUSH,
         rankName: 'Royal Flush',
         rankNameKorean: RANK_NAMES_KOREAN[HandRank.ROYAL_FLUSH],
-        score: HandRank.ROYAL_FLUSH * 100000000 + straightHigh,
+        score,
         cards: sorted,
         description: '로열 스트레이트 플러시 (A-K-Q-J-10 동문양)',
       };
@@ -126,7 +258,7 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
       rank: HandRank.STRAIGHT_FLUSH,
       rankName: 'Straight Flush',
       rankNameKorean: RANK_NAMES_KOREAN[HandRank.STRAIGHT_FLUSH],
-      score: HandRank.STRAIGHT_FLUSH * 100000000 + straightHigh,
+      score,
       cards: sorted,
       description: `${VALUE_TO_RANK[straightHigh]} 하이 스트레이트 플러시`,
     };
@@ -136,7 +268,6 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
   if (counts[0].count === 4) {
     const quadVal = counts[0].val;
     const kicker = counts[1].val;
-    const score = HandRank.FOUR_OF_A_KIND * 100000000 + quadVal * 100 + kicker;
     return {
       rank: HandRank.FOUR_OF_A_KIND,
       rankName: 'Four of a Kind',
@@ -151,7 +282,6 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
   if (counts[0].count === 3 && counts[1].count === 2) {
     const tripVal = counts[0].val;
     const pairVal = counts[1].val;
-    const score = HandRank.FULL_HOUSE * 100000000 + tripVal * 100 + pairVal;
     return {
       rank: HandRank.FULL_HOUSE,
       rankName: 'Full House',
@@ -164,10 +294,6 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
 
   // 4. Flush
   if (isFlush) {
-    let score = HandRank.FLUSH * 100000000;
-    values.forEach((v, i) => {
-      score += v * Math.pow(15, 4 - i);
-    });
     return {
       rank: HandRank.FLUSH,
       rankName: 'Flush',
@@ -180,7 +306,6 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
 
   // 5. Straight
   if (isStraight) {
-    const score = HandRank.STRAIGHT * 100000000 + straightHigh;
     return {
       rank: HandRank.STRAIGHT,
       rankName: 'Straight',
@@ -195,7 +320,6 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
   if (counts[0].count === 3) {
     const tripVal = counts[0].val;
     const kickers = [counts[1].val, counts[2].val].sort((a, b) => b - a);
-    const score = HandRank.THREE_OF_A_KIND * 100000000 + tripVal * 10000 + kickers[0] * 100 + kickers[1];
     return {
       rank: HandRank.THREE_OF_A_KIND,
       rankName: 'Three of a Kind',
@@ -211,7 +335,6 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
     const highPair = Math.max(counts[0].val, counts[1].val);
     const lowPair = Math.min(counts[0].val, counts[1].val);
     const kicker = counts[2].val;
-    const score = HandRank.TWO_PAIR * 100000000 + highPair * 10000 + lowPair * 100 + kicker;
     return {
       rank: HandRank.TWO_PAIR,
       rankName: 'Two Pair',
@@ -226,7 +349,6 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
   if (counts[0].count === 2) {
     const pairVal = counts[0].val;
     const kickers = [counts[1].val, counts[2].val, counts[3].val].sort((a, b) => b - a);
-    const score = HandRank.ONE_PAIR * 100000000 + pairVal * 1000000 + kickers[0] * 10000 + kickers[1] * 100 + kickers[2];
     return {
       rank: HandRank.ONE_PAIR,
       rankName: 'One Pair',
@@ -238,10 +360,6 @@ export function evaluate5Cards(cards: Card[]): EvaluatedHand {
   }
 
   // 9. High card
-  let score = HandRank.HIGH_CARD * 100000000;
-  values.forEach((v, i) => {
-    score += v * Math.pow(15, 4 - i);
-  });
   return {
     rank: HandRank.HIGH_CARD,
     rankName: 'High Card',
@@ -292,18 +410,29 @@ export function evaluateHand(cards: Card[]): EvaluatedHand {
     return evaluate5Cards(cards);
   }
 
-  // 6 or 7 cards: find highest score 5-card combo
-  const allCombos = combinations(cards, 5);
-  let bestHand = evaluate5Cards(allCombos[0]);
+  // 6 or 7 cards: score every 5-card combo with the cheap scorer, then build the
+  // descriptive object once, for the winner only.
+  const indices = Array.from({ length: cards.length }, (_, i) => i);
+  const combos = COMBO_INDICES[cards.length] || combinations(indices, 5);
 
-  for (let i = 1; i < allCombos.length; i++) {
-    const current = evaluate5Cards(allCombos[i]);
-    if (current.score > bestHand.score) {
-      bestHand = current;
+  let bestCombo = combos[0];
+  let bestValue = -1;
+  for (let i = 0; i < combos.length; i++) {
+    const c = combos[i];
+    const value = score5(cards[c[0]], cards[c[1]], cards[c[2]], cards[c[3]], cards[c[4]]);
+    if (value > bestValue) {
+      bestValue = value;
+      bestCombo = c;
     }
   }
 
-  return bestHand;
+  return evaluate5Cards([
+    cards[bestCombo[0]],
+    cards[bestCombo[1]],
+    cards[bestCombo[2]],
+    cards[bestCombo[3]],
+    cards[bestCombo[4]],
+  ]);
 }
 
 // Calculate Outs & Draws
@@ -526,7 +655,7 @@ export function calculateLiveEquity(
   activeOpponentCount: number,
   potSize: number,
   callAmount: number,
-  trials = 300
+  trials = 2000
 ): LiveEquityData {
   if (heroHole.length !== 2) {
     return {
@@ -555,30 +684,53 @@ export function calculateLiveEquity(
   let wins = 0;
   let ties = 0;
   const numOpponents = Math.max(1, activeOpponentCount);
+  const neededBoardCards = 5 - community.length;
+
+  // Buffers reused across every trial. The simulation only ever compares scores,
+  // so it uses bestScore() and never builds the descriptive EvaluatedHand object.
+  const draw = remainingDeck.slice();
+  const cardsToDraw = Math.min(draw.length, neededBoardCards + numOpponents * 2);
+  const heroSeven: Card[] = new Array(7);
+  const oppSeven: Card[] = new Array(7);
+
+  heroSeven[0] = heroHole[0];
+  heroSeven[1] = heroHole[1];
+  for (let b = 0; b < community.length; b++) {
+    heroSeven[b + 2] = community[b];
+    oppSeven[b + 2] = community[b];
+  }
 
   for (let t = 0; t < trials; t++) {
-    const simDeck = shuffleDeck(remainingDeck);
-    let deckIdx = 0;
-
-    const neededBoardCards = 5 - community.length;
-    const simBoard = [...community];
-    for (let b = 0; b < neededBoardCards; b++) {
-      simBoard.push(simDeck[deckIdx++]);
+    // Partial Fisher-Yates: shuffle only the cards this trial actually consumes
+    // instead of copying and shuffling the whole remaining deck.
+    for (let i = 0; i < cardsToDraw; i++) {
+      const j = i + Math.floor(Math.random() * (draw.length - i));
+      const tmp = draw[i];
+      draw[i] = draw[j];
+      draw[j] = tmp;
     }
 
-    const heroBest = evaluateHand([...heroHole, ...simBoard]);
+    let deckIdx = 0;
+    for (let b = 0; b < neededBoardCards; b++) {
+      const card = draw[deckIdx++];
+      heroSeven[community.length + b + 2] = card;
+      oppSeven[community.length + b + 2] = card;
+    }
+
+    const heroScore = bestScore(heroSeven);
     let heroWon = true;
     let isTie = false;
 
     for (let o = 0; o < numOpponents; o++) {
-      const oppHole = [simDeck[deckIdx++], simDeck[deckIdx++]];
-      const oppBest = evaluateHand([...oppHole, ...simBoard]);
+      oppSeven[0] = draw[deckIdx++];
+      oppSeven[1] = draw[deckIdx++];
+      const oppScore = bestScore(oppSeven);
 
-      if (oppBest.score > heroBest.score) {
+      if (oppScore > heroScore) {
         heroWon = false;
         isTie = false;
         break;
-      } else if (oppBest.score === heroBest.score) {
+      } else if (oppScore === heroScore) {
         isTie = true;
       }
     }
@@ -702,7 +854,7 @@ export function calculateBotAction(
 ): { action: ActionType; amount: number; thought: string } {
   const personalityId = bot.personality?.id || 'gto_pro';
   const toCall = currentHighestBet - bot.currentBet;
-  const botEquity = calculateLiveEquity(bot.cards, communityCards, activePlayersCount - 1, potSize, toCall, 150).winRate;
+  const botEquity = calculateLiveEquity(bot.cards, communityCards, activePlayersCount - 1, potSize, toCall, 600).winRate;
   const potOdds = toCall > 0 ? (toCall / (potSize + toCall)) * 100 : 0;
   const isChecked = toCall === 0;
 
