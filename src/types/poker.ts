@@ -142,6 +142,27 @@ export interface LiveEquityData {
   aimingHandSummary?: string;
 }
 
+export type HeroHandClass = 'value' | 'semi_bluff' | 'pure_bluff' | 'showdown_value';
+
+export interface BluffReadout {
+  handClass: HeroHandClass;
+  handClassLabel: string;
+  handClassDetail: string;
+  foldEquity: number; // how often the whole table folds to this bet
+  breakEvenFoldEquity: number; // fold equity the bet needs to beat checking
+  equityWhenCalled: number; // hero equity against the hands that do continue
+  bluffEV: number;
+  checkEV: number;
+  isProfitable: boolean;
+  betSize: number;
+  betToPot: number;
+  blockerSummary: string;
+  summary: string;
+  modelDefenseFrequency: number;
+  minDefenseFrequency: number;
+  opponentRangeSummary: string;
+}
+
 export interface CoachAdvice {
   action: 'FOLD' | 'CHECK' | 'CALL' | 'BET' | 'RAISE' | 'ALL_IN';
   suggestedAmount?: number; // Total chips to raise TO on this street
@@ -155,6 +176,7 @@ export interface CoachAdvice {
   gtoConcept: string;
   bluffPercent?: number;
   valuePercent?: number;
+  bluff?: BluffReadout;
 }
 
 export type AppViewMode = 'table' | 'headsup' | 'drills' | 'range_chart' | 'coach_chat';

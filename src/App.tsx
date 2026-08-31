@@ -25,6 +25,9 @@ import {
 } from './lib/pokerEngine';
 import { pokerAudio } from './lib/audioSynth';
 import { generateClientGTOAdvice } from './lib/gtoSolver';
+import type { SerializableRange } from './lib/gtoSolver';
+import { assignPreflopRange, liveCombosFor } from './lib/rangeModel';
+import type { AssignedRange } from './lib/rangeModel';
 import { Navbar } from './components/Navbar';
 import { PokerTable } from './components/PokerTable';
 import { BettingControls } from './components/BettingControls';
@@ -272,6 +275,52 @@ export default function App() {
     pokerAudio.playChipBet();
   };
 
+  // What each opponent still in the hand can be holding, from their seat, their
+  // playing style and what they have done this hand. This is what turns "can my
+  // hand beat five random hands" into "can it beat what these players would
+  // still be holding here".
+  const buildOpponentRanges = useCallback(
+    (
+      livePlayers: Player[],
+      hero: Player,
+      board: Card[],
+      calledBetToPot: number
+    ): { ranges: AssignedRange[]; combos: Array<Array<{ a: Card; b: Card }>> } => {
+      const dead = new Set<string>([...hero.cards, ...board].map(c => c.id));
+      const ranges: AssignedRange[] = [];
+      const combos: Array<Array<{ a: Card; b: Card }>> = [];
+
+      for (const p of livePlayers) {
+        const range = assignPreflopRange(
+          {
+            id: p.id,
+            name: p.name,
+            position: p.position,
+            vpip: p.personality?.vpip ?? 25,
+            pfr: p.personality?.pfr ?? 18,
+          },
+          currentHandActions
+        );
+        // Only a player who has actually put chips in on this street has shown
+        // anything worth narrowing their range with. Someone yet to act still
+        // holds their whole preflop range.
+        const committedThisStreet = currentHandActions.some(
+          a =>
+            a.playerId === p.id &&
+            a.street === bettingRound &&
+            (a.action === 'call' || a.action === 'bet' || a.action === 'raise' || a.action === 'all-in')
+        );
+        const live = liveCombosFor(range, dead, board, committedThisStreet ? calledBetToPot : 0);
+        if (live.length === 0) continue;
+        ranges.push(range);
+        combos.push(live);
+      }
+
+      return { ranges, combos };
+    },
+    [currentHandActions, bettingRound]
+  );
+
   // Fetch AI Coach Advice from server
   const fetchCoachAdvice = useCallback(async (force = false) => {
     const hero = players.find(p => p.isHuman);
@@ -292,6 +341,20 @@ export default function App() {
       p => !p.isHuman && !p.folded && p.lastAction?.type === 'call' && p.lastAction.street === bettingRound
     ).length;
     const minRaiseTo = currentHighestBet > 0 ? currentHighestBet + minRaiseIncrement : BIG_BLIND;
+
+    const { ranges } = buildOpponentRanges(
+      players.filter(p => !p.folded && !p.isHuman),
+      hero,
+      communityCards,
+      totalPot > 0 ? currentHighestBet / totalPot : 0
+    );
+    const serializedRanges: SerializableRange[] = ranges.map(r => ({
+      playerId: r.playerId,
+      name: r.name,
+      combos: Array.from(r.combos),
+      percent: r.percent,
+      reason: r.reason,
+    }));
 
     lastFetchedStateRef.current = stateKey;
     isFetchingCoachRef.current = true;
@@ -316,6 +379,7 @@ export default function App() {
           bigBlind: BIG_BLIND,
           callersInPot,
           minRaiseTo,
+          opponentRanges: serializedRanges,
         }),
       });
 
@@ -338,6 +402,7 @@ export default function App() {
           bigBlind: BIG_BLIND,
           callersInPot,
           minRaiseTo,
+          opponentRanges: serializedRanges,
         });
         setCoachAdvice(fallback);
       }
@@ -357,13 +422,14 @@ export default function App() {
         bigBlind: BIG_BLIND,
         callersInPot,
         minRaiseTo,
+        opponentRanges: serializedRanges,
       });
       setCoachAdvice(fallback);
     } finally {
       isFetchingCoachRef.current = false;
       setIsLoadingCoach(false);
     }
-  }, [players, communityCards, bettingRound, currentHighestBet, minRaiseIncrement, pots, equityData, handNumber]);
+  }, [players, communityCards, bettingRound, currentHighestBet, minRaiseIncrement, pots, equityData, handNumber, buildOpponentRanges]);
 
   // Recalculate live equity whenever cards, board, or highest bet changes
   useEffect(() => {
@@ -392,8 +458,29 @@ export default function App() {
       if (equityKey === lastEquityKeyRef.current) return;
       lastEquityKeyRef.current = equityKey;
 
+      // Range-weighted equity. The bet already faced on this street also tells
+      // us how much of each opponent's range is still live.
+      const liveOpponents = players.filter(p => !p.folded && !p.isHuman);
+      const calledBetToPot = totalPot > 0 ? currentHighestBet / totalPot : 0;
+      const { ranges, combos } = buildOpponentRanges(liveOpponents, hero, communityCards, calledBetToPot);
+      const serializedRanges: SerializableRange[] = ranges.map(r => ({
+        playerId: r.playerId,
+        name: r.name,
+        combos: Array.from(r.combos),
+        percent: r.percent,
+        reason: r.reason,
+      }));
+
       // Fast synchronous real-time equity & outs calculation
-      const eq = calculateLiveEquity(hero.cards, communityCards, activeCount, totalPot, toCall, EQUITY_TRIALS);
+      const eq = calculateLiveEquity(
+        hero.cards,
+        communityCards,
+        activeCount,
+        totalPot,
+        toCall,
+        EQUITY_TRIALS,
+        combos.length >= activeCount ? combos : undefined
+      );
       setEquityData(eq);
 
       // Sizing inputs: a raise is only meaningful in big blinds, and it has to
@@ -419,10 +506,11 @@ export default function App() {
         bigBlind: BIG_BLIND,
         callersInPot,
         minRaiseTo,
+        opponentRanges: serializedRanges,
       });
       setCoachAdvice(prev => (prev ? { ...prev, ...instantGTO, confidence: prev.confidence || instantGTO.confidence } : instantGTO));
     }
-  }, [players, communityCards, currentHighestBet, minRaiseIncrement, pots, bettingRound, handNumber]);
+  }, [players, communityCards, currentHighestBet, minRaiseIncrement, pots, bettingRound, handNumber, buildOpponentRanges]);
 
   // Assign Positions according to dealer button
   const assignPositions = (tablePlayers: Player[], dealerIdx: number): Player[] => {

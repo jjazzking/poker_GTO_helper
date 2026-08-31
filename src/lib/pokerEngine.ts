@@ -655,7 +655,12 @@ export function calculateLiveEquity(
   activeOpponentCount: number,
   potSize: number,
   callAmount: number,
-  trials = 2000
+  trials = 2000,
+  // One list of possible holdings per opponent. When given, opponents are dealt
+  // from their range instead of uniformly at random, which is the difference
+  // between "can my hand beat five random hands" and "can it beat the hands
+  // these players would actually still be holding here".
+  opponentCombos?: Array<Array<{ a: Card; b: Card }>>
 ): LiveEquityData {
   if (heroHole.length !== 2) {
     return {
@@ -700,10 +705,47 @@ export function calculateLiveEquity(
     oppSeven[b + 2] = community[b];
   }
 
+  // Ranges are used only when every opponent has a non-empty list; a partially
+  // known table falls back to uniform dealing rather than mixing the two models.
+  const useRanges =
+    !!opponentCombos &&
+    opponentCombos.length >= numOpponents &&
+    opponentCombos.slice(0, numOpponents).every(list => list && list.length > 0);
+
+  const holeCards: Card[][] = new Array(numOpponents);
+  const takenIds = new Set<string>();
+  // Shuffle enough of the deck to cover the board plus any cards already claimed
+  // by the sampled opponent hands, which have to be skipped over.
+  const shufflePrefix = Math.min(draw.length, cardsToDraw + 10);
+
   for (let t = 0; t < trials; t++) {
+    let sampledAll = true;
+    if (useRanges) {
+      takenIds.clear();
+      for (let o = 0; o < numOpponents; o++) {
+        const list = opponentCombos![o];
+        let picked: { a: Card; b: Card } | null = null;
+        // Rejection sampling: two opponents cannot hold the same card.
+        for (let attempt = 0; attempt < 60; attempt++) {
+          const cand = list[Math.floor(Math.random() * list.length)];
+          if (!takenIds.has(cand.a.id) && !takenIds.has(cand.b.id)) {
+            picked = cand;
+            break;
+          }
+        }
+        if (!picked) {
+          sampledAll = false;
+          break;
+        }
+        takenIds.add(picked.a.id);
+        takenIds.add(picked.b.id);
+        holeCards[o] = [picked.a, picked.b];
+      }
+    }
+
     // Partial Fisher-Yates: shuffle only the cards this trial actually consumes
     // instead of copying and shuffling the whole remaining deck.
-    for (let i = 0; i < cardsToDraw; i++) {
+    for (let i = 0; i < shufflePrefix; i++) {
       const j = i + Math.floor(Math.random() * (draw.length - i));
       const tmp = draw[i];
       draw[i] = draw[j];
@@ -711,8 +753,13 @@ export function calculateLiveEquity(
     }
 
     let deckIdx = 0;
+    const dealtFromRange = useRanges && sampledAll;
     for (let b = 0; b < neededBoardCards; b++) {
-      const card = draw[deckIdx++];
+      let card = draw[deckIdx++];
+      // Skip cards the sampled opponent hands already hold.
+      while (dealtFromRange && takenIds.has(card.id) && deckIdx < draw.length) {
+        card = draw[deckIdx++];
+      }
       heroSeven[community.length + b + 2] = card;
       oppSeven[community.length + b + 2] = card;
     }
@@ -722,8 +769,13 @@ export function calculateLiveEquity(
     let isTie = false;
 
     for (let o = 0; o < numOpponents; o++) {
-      oppSeven[0] = draw[deckIdx++];
-      oppSeven[1] = draw[deckIdx++];
+      if (dealtFromRange) {
+        oppSeven[0] = holeCards[o][0];
+        oppSeven[1] = holeCards[o][1];
+      } else {
+        oppSeven[0] = draw[deckIdx++];
+        oppSeven[1] = draw[deckIdx++];
+      }
       const oppScore = bestScore(oppSeven);
 
       if (oppScore > heroScore) {

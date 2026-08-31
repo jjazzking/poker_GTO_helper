@@ -1,11 +1,24 @@
 // Client-Side Resilient GTO Engine & Knowledge Base for Static Hosting (GitHub Pages) & Offline Mode
 
-import type { Card } from '../types/poker';
+import type { BluffReadout, Card } from '../types/poker';
+import { analyzeBluff, bestBluffSizing } from './bluffAnalysis';
+
+// Opponent ranges cross the API boundary as plain arrays so the same advice
+// function works whether it runs in the browser or behind the HTTP endpoint.
+export interface SerializableRange {
+  playerId: string;
+  name: string;
+  combos: string[];
+  percent: number;
+  reason: string;
+}
+
 
 export interface CoachAdvicePayload {
   action: 'FOLD' | 'CHECK' | 'CALL' | 'BET' | 'RAISE' | 'ALL_IN';
   suggestedAmount: number;
   suggestedAmountBB?: number;
+  bluff?: BluffReadout;
   sizingLabel?: string;
   sizingRationale?: string;
   potFraction?: number;
@@ -158,6 +171,7 @@ export function generateClientGTOAdvice(params: {
   bigBlind?: number;
   callersInPot?: number;
   minRaiseTo?: number;
+  opponentRanges?: SerializableRange[];
 }): CoachAdvicePayload {
   const {
     communityCards = [],
@@ -172,6 +186,8 @@ export function generateClientGTOAdvice(params: {
     bigBlind = 20,
     callersInPot = 0,
     minRaiseTo = 0,
+    opponentRanges,
+    heroCards = [],
   } = params;
 
   const isChecked = toCall === 0;
@@ -336,6 +352,128 @@ export function generateClientGTOAdvice(params: {
     gtoConcept = 'Raise First In (RFI) Standard Range';
   }
 
+  // ---------------------------------------------------------------------
+  // Bluffing. The equity bands above only know one number, so they cannot tell
+  // a nut flush draw from a made hand of the same equity, and they never bet or
+  // raise without one. With opponent ranges available we can ask the questions
+  // that actually decide a bluff: how often does this range fold to this size,
+  // what do our own cards remove from the hands that would not fold, and does
+  // betting beat checking once both are priced.
+  // ---------------------------------------------------------------------
+  let bluff: BluffReadout | undefined;
+
+  if (opponentRanges && opponentRanges.length > 0 && communityCards.length >= 3 && potSize > 0) {
+    const opponents = opponentRanges.map(r => ({
+      playerId: r.playerId,
+      name: r.name,
+      combos: new Set(r.combos),
+      percent: r.percent,
+      reason: r.reason,
+    }));
+
+    const rangeSummary = opponents
+      .map(o => `${o.name}: 상위 ${o.percent}% (${o.reason})`)
+      .join(' / ');
+
+    const analysis = isChecked
+      ? bestBluffSizing({ heroCards, board: communityCards, potSize, opponents })
+      : analyzeBluff({
+          heroCards,
+          board: communityCards,
+          potSize,
+          // A raise has to get through the bet already in front of us, so the
+          // price villain is offered is the raise beyond that bet.
+          betSize: Math.max(bigBlind, Math.round(currentBet * 2.5) - currentBet),
+          opponents,
+        });
+
+    if (analysis) {
+      bluff = {
+        handClass: analysis.handClass,
+        handClassLabel: analysis.handClassLabel,
+        handClassDetail: analysis.handClassDetail,
+        foldEquity: analysis.foldEquity,
+        breakEvenFoldEquity: analysis.breakEvenFoldEquity,
+        equityWhenCalled: analysis.equityWhenCalled,
+        bluffEV: analysis.bluffEV,
+        checkEV: analysis.checkEV,
+        isProfitable: analysis.isProfitable,
+        betSize: analysis.betSize,
+        betToPot: analysis.betToPot,
+        blockerSummary: analysis.blockerSummary,
+        summary: analysis.summary,
+        modelDefenseFrequency: analysis.modelDefenseFrequency,
+        minDefenseFrequency: analysis.minDefenseFrequency,
+        opponentRangeSummary: rangeSummary,
+      };
+
+      const isBluffCandidate = analysis.handClass === 'semi_bluff' || analysis.handClass === 'pure_bluff';
+      // A pure bluff has no fallback when called, so it needs a clearer edge
+      // than a semi-bluff that still has outs.
+      const margin = analysis.handClass === 'pure_bluff' ? 8 : 3;
+      const clearlyProfitable =
+        analysis.isProfitable && analysis.foldEquity >= analysis.breakEvenFoldEquity + margin;
+
+      if (isChecked && action === 'CHECK' && isBluffCandidate && clearlyProfitable) {
+        action = 'BET';
+        betPotFraction = analysis.betToPot;
+        confidence = analysis.handClass === 'semi_bluff' ? 76 : 68;
+        valuePercent = analysis.handClass === 'semi_bluff' ? 35 : 5;
+        bluffPercent = 100 - valuePercent;
+        summary = `${analysis.handClassLabel}로 베팅합니다. ${analysis.summary}`;
+        reasoning.length = 0;
+        reasoning.push(
+          `상대 레인지가 이 사이즈에 ${analysis.foldEquity}% 폴드하며, 손익분기 폴드 에쿼티는 ${analysis.breakEvenFoldEquity}%입니다.`
+        );
+        reasoning.push(
+          analysis.handClass === 'semi_bluff'
+            ? `콜당해도 승률 ${analysis.equityWhenCalled}%가 남아 있어 폴드와 완성 두 갈래로 이깁니다.`
+            : `콜당하면 승률 ${analysis.equityWhenCalled}%로 거의 이기지 못하므로, 폴드를 받아내는 것이 유일한 목적입니다.`
+        );
+        reasoning.push(analysis.blockerSummary);
+        gtoConcept =
+          analysis.handClass === 'semi_bluff'
+            ? 'Semi-Bluff: 폴드 에쿼티와 아웃츠를 동시에 활용하는 이중 승리 경로'
+            : 'Pure Bluff & Fold Equity: 폴드 에쿼티가 손익분기를 넘을 때만 성립하는 블러프';
+      } else if (isChecked && action === 'BET' && analysis.handClass === 'showdown_value' && !analysis.isProfitable) {
+        action = 'CHECK';
+        betPotFraction = null;
+        summary = `${analysis.handClassLabel} 핸드입니다. ${analysis.summary}`;
+        reasoning.length = 0;
+        reasoning.push('블러프로 돌리면 그냥 보여줘서 이길 수 있었던 지분을 버리게 됩니다.');
+        reasoning.push(`폴드 에쿼티 ${analysis.foldEquity}%로는 손익분기 ${analysis.breakEvenFoldEquity}%에 미치지 못합니다.`);
+        gtoConcept = 'Showdown Value Protection: 쇼다운 가치가 있는 핸드는 블러프로 전환하지 않음';
+      } else if (!isChecked && action === 'FOLD' && analysis.handClass === 'semi_bluff' && clearlyProfitable) {
+        // Too weak to call, but strong enough to raise: folding a hand with real
+        // outs and real fold equity leaves the third option on the table.
+        action = 'RAISE';
+        confidence = 70;
+        valuePercent = 30;
+        bluffPercent = 70;
+        summary = `콜하기에는 오즈가 맞지 않지만 폴드 대신 세미 블러프 레이즈가 가능한 스팟입니다. ${analysis.summary}`;
+        reasoning.length = 0;
+        reasoning.push(
+          `콜은 -EV지만, 레이즈에는 상대가 ${analysis.foldEquity}% 폴드하고 손익분기는 ${analysis.breakEvenFoldEquity}%입니다.`
+        );
+        reasoning.push(`콜당해도 승률 ${analysis.equityWhenCalled}%의 아웃츠가 남습니다.`);
+        reasoning.push(analysis.blockerSummary);
+        gtoConcept = 'Semi-Bluff Raise: 콜도 폴드도 아닌 세 번째 선택지로 폴드 에쿼티를 획득';
+      }
+    }
+  }
+
+  // The equity bands know only a win rate, so they call anything with a high one
+  // a made value hand -- including a nut flush draw, which is the opposite kind
+  // of bet. With a hand class available, name it for what it is.
+  if (bluff && (action === 'BET' || action === 'RAISE') && !summary.includes(bluff.handClassLabel)) {
+    if (bluff.handClass === 'semi_bluff' && summary.includes('밸류')) {
+      summary = summary.replace(/밸류 핸드/g, bluff.handClassLabel);
+    } else {
+      summary = `[${bluff.handClassLabel}] ${summary}`;
+    }
+    reasoning.push(bluff.handClassDetail);
+  }
+
   // Size the action once, after the bands have settled what it is.
   let sizing: RaiseSizing | null = null;
   if (action === 'BET' || action === 'RAISE') {
@@ -364,6 +502,7 @@ export function generateClientGTOAdvice(params: {
     action,
     suggestedAmount,
     suggestedAmountBB: sizing ? sizing.amountBB : undefined,
+    bluff,
     sizingLabel: sizing ? sizing.label : undefined,
     sizingRationale: sizing ? sizing.rationale : undefined,
     potFraction: sizing ? sizing.potFraction : undefined,

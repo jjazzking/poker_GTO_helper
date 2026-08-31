@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { LiveEquityData, CoachAdvice } from '../types/poker';
-import { Sparkles, Brain, Calculator, Target, RefreshCw, HelpCircle, Layers, CheckCircle2, TrendingUp, AlertTriangle, ChevronDown, ChevronUp, Plus, Minus, Coins } from 'lucide-react';
+import { Sparkles, Brain, Calculator, Target, RefreshCw, HelpCircle, Layers, CheckCircle2, TrendingUp, AlertTriangle, ChevronDown, ChevronUp, Plus, Minus, Coins, Drama, Ban } from 'lucide-react';
 import { PlayingCard } from './PlayingCard';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -28,6 +28,16 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
   useFourColor = true,
 }) => {
   const [showAllOuts, setShowAllOuts] = useState<boolean>(true);
+  const [showBluffDetail, setShowBluffDetail] = useState<boolean>(false);
+
+  // Value hands want calls; bluffs want folds. Colouring them apart keeps the
+  // two kinds of bet from reading as the same recommendation.
+  const HAND_CLASS_STYLE: Record<string, string> = {
+    value: 'bg-emerald-500/15 text-emerald-300 border-emerald-400/40',
+    semi_bluff: 'bg-amber-500/15 text-amber-300 border-amber-400/40',
+    pure_bluff: 'bg-rose-500/15 text-rose-300 border-rose-400/40',
+    showdown_value: 'bg-sky-500/15 text-sky-300 border-sky-400/40',
+  };
 
   const getEVBadge = () => {
     if (toCall === 0) {
@@ -371,6 +381,110 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
                     <p className="text-[10px] leading-snug text-slate-300 break-words">
                       {coachAdvice.sizingRationale}
                     </p>
+                  )}
+                </div>
+              )}
+
+              {/* Bluff analysis: what kind of bet this is, and whether the fold
+                  equity behind it actually pays for it */}
+              {coachAdvice.bluff && (
+                <div className="flex flex-col gap-2 bg-slate-950/80 border border-slate-800 px-2.5 py-2 rounded-xl">
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <Drama className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                      <span className="text-[11px] font-bold text-slate-300">블러프 분석</span>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-lg text-[10px] font-extrabold border ${
+                        HAND_CLASS_STYLE[coachAdvice.bluff.handClass] || 'bg-slate-800 text-slate-300 border-slate-700'
+                      }`}
+                    >
+                      {coachAdvice.bluff.handClassLabel}
+                    </span>
+                  </div>
+
+                  {/* Fold equity against the break-even it has to clear */}
+                  <div className="flex flex-col gap-1">
+                    <div className="flex justify-between items-baseline text-[10px]">
+                      <span className="text-slate-400">폴드 에쿼티</span>
+                      <span className="font-mono">
+                        <span
+                          className={`font-black text-xs ${
+                            coachAdvice.bluff.foldEquity >= coachAdvice.bluff.breakEvenFoldEquity
+                              ? 'text-emerald-400'
+                              : 'text-rose-400'
+                          }`}
+                        >
+                          {coachAdvice.bluff.foldEquity}%
+                        </span>
+                        <span className="text-slate-500"> / 손익분기 {coachAdvice.bluff.breakEvenFoldEquity}%</span>
+                      </span>
+                    </div>
+                    <div className="relative w-full h-2.5 bg-slate-800 rounded-full overflow-hidden border border-slate-700/60">
+                      <motion.div
+                        className={`h-full rounded-full ${
+                          coachAdvice.bluff.foldEquity >= coachAdvice.bluff.breakEvenFoldEquity
+                            ? 'bg-gradient-to-r from-emerald-500 to-teal-400'
+                            : 'bg-gradient-to-r from-rose-600 to-rose-400'
+                        }`}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${Math.min(100, Math.max(0, coachAdvice.bluff.foldEquity))}%` }}
+                        transition={{ duration: 0.3 }}
+                      />
+                      {/* Break-even marker */}
+                      <div
+                        className="absolute top-0 bottom-0 w-0.5 bg-slate-100/80"
+                        style={{ left: `${Math.min(100, Math.max(0, coachAdvice.bluff.breakEvenFoldEquity))}%` }}
+                        title={`손익분기 ${coachAdvice.bluff.breakEvenFoldEquity}%`}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5 text-[10px]">
+                    <div className="bg-slate-900/80 rounded-lg px-2 py-1 border border-slate-800">
+                      <div className="text-slate-400">콜당할 때 승률</div>
+                      <div className="font-mono font-bold text-slate-200">{coachAdvice.bluff.equityWhenCalled}%</div>
+                    </div>
+                    <div className="bg-slate-900/80 rounded-lg px-2 py-1 border border-slate-800">
+                      <div className="text-slate-400">벳 EV vs 체크 EV</div>
+                      <div className="font-mono font-bold">
+                        <span className={coachAdvice.bluff.isProfitable ? 'text-emerald-400' : 'text-slate-300'}>
+                          ${coachAdvice.bluff.bluffEV.toLocaleString()}
+                        </span>
+                        <span className="text-slate-500"> / </span>
+                        <span className={coachAdvice.bluff.isProfitable ? 'text-slate-300' : 'text-emerald-400'}>
+                          ${coachAdvice.bluff.checkEV.toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowBluffDetail(prev => !prev)}
+                    className="self-start text-[10px] text-indigo-300 hover:text-indigo-200 font-bold flex items-center gap-1 cursor-pointer transition"
+                  >
+                    {showBluffDetail ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                    <span>{showBluffDetail ? '근거 접기' : '블로커 · 상대 레인지 근거 보기'}</span>
+                  </button>
+
+                  {showBluffDetail && (
+                    <div className="flex flex-col gap-1.5 text-[10px] leading-snug text-slate-300 border-t border-slate-800 pt-1.5">
+                      <p className="break-words">{coachAdvice.bluff.handClassDetail}</p>
+                      <p className="break-words flex items-start gap-1">
+                        <Ban className="w-3 h-3 text-rose-400 shrink-0 mt-0.5" />
+                        <span>{coachAdvice.bluff.blockerSummary}</span>
+                      </p>
+                      <p className="break-words text-slate-400">
+                        <span className="text-slate-300 font-bold">상대 레인지 </span>
+                        {coachAdvice.bluff.opponentRangeSummary}
+                      </p>
+                      <p className="text-[9px] text-slate-500 break-words">
+                        모델 디펜스 {coachAdvice.bluff.modelDefenseFrequency}% vs 이론적 최소(MDF){' '}
+                        {coachAdvice.bluff.minDefenseFrequency}%. 한 스트리트 기준 근사치이며 이후 스트리트 플레이는
+                        반영하지 않습니다.
+                      </p>
+                    </div>
                   )}
                 </div>
               )}
