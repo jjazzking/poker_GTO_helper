@@ -1,0 +1,7 @@
+{
+  "name": "AI 텍사스 홀덤 트레이너",
+  "description": "다양한 플레이 스타일의 AI 봇과 실전 홀덤을 플레이하고, 실시간 AI 코칭, 에쿼티/팟 오즈 계산 및 포커 드릴 연습을 제공하는 텍사스 홀덤 트레이닝 플랫폼",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
