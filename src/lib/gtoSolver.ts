@@ -1,8 +1,14 @@
 // Client-Side Resilient GTO Engine & Knowledge Base for Static Hosting (GitHub Pages) & Offline Mode
 
+import type { Card } from '../types/poker';
+
 export interface CoachAdvicePayload {
   action: 'FOLD' | 'CHECK' | 'CALL' | 'BET' | 'RAISE' | 'ALL_IN';
   suggestedAmount: number;
+  suggestedAmountBB?: number;
+  sizingLabel?: string;
+  sizingRationale?: string;
+  potFraction?: number;
   confidence: number;
   summary: string;
   reasoning: string[];
@@ -11,9 +17,135 @@ export interface CoachAdvicePayload {
   valuePercent: number;
 }
 
+export interface RaiseSizing {
+  amount: number; // Total chips to raise TO on this street (matches BettingControls)
+  amountBB: number; // The same size expressed in big blinds
+  potFraction: number; // Chips added, as a fraction of the current pot
+  label: string; // Short tag, e.g. "3-Bet" or "67% 팟 벳"
+  rationale: string; // One line explaining where the number came from
+  isAllIn: boolean;
+}
+
+export interface SizingContext {
+  street: string;
+  bigBlind: number;
+  potSize: number;
+  currentBet: number; // Highest bet on this street
+  toCall: number;
+  heroStreetBet: number; // What hero already has in front on this street
+  heroChips: number; // Hero's remaining stack
+  position: string;
+  callersInPot: number; // Opponents who have already called on this street
+  minRaiseTo: number; // Smallest legal raise-to
+  boardSuitCount: number;
+}
+
+// Late position gets a cheaper open and a smaller 3-bet: acting last realizes
+// more equity, so it does not need to charge itself as much to see a flop.
+const IN_POSITION = new Set(['BTN', 'CO']);
+
+function bbText(v: number): string {
+  return Number.isInteger(v) ? `${v}BB` : `${v.toFixed(1)}BB`;
+}
+
+// Turns the band's intent into an actual number. Sizing is expressed in big
+// blinds preflop (where stacks and ranges are measured in BB) and as a fraction
+// of the pot postflop (where the pot is what the bet has to price against).
+export function computeRaiseSizing(ctx: SizingContext, betPotFraction: number | null): RaiseSizing {
+  const bb = ctx.bigBlind > 0 ? ctx.bigBlind : 20;
+  const maxRaiseTo = ctx.heroChips + ctx.heroStreetBet;
+  const minRaiseTo = Math.max(bb, ctx.minRaiseTo > 0 ? ctx.minRaiseTo : bb);
+  const isIP = IN_POSITION.has(ctx.position);
+  const callers = Math.max(0, ctx.callersInPot);
+
+  let target: number;
+  let label: string;
+  let rationale: string;
+
+  if (ctx.street === 'preflop') {
+    const facingBB = ctx.currentBet / bb;
+
+    if (facingBB <= 1.01) {
+      // Nobody has raised yet: this is an open, or an isolation raise over limpers.
+      const baseBB = isIP ? 2.5 : 3;
+      const sizeBB = baseBB + callers;
+      target = sizeBB * bb;
+      if (callers > 0) {
+        label = `아이솔레이트 레이즈 ${bbText(sizeBB)}`;
+        rationale = `기본 오픈 ${bbText(baseBB)}에 리밍한 ${callers}명분 +${callers}BB를 더한 ${bbText(sizeBB)}입니다. 리밍이 있을 때 같은 사이즈로 올리면 너무 싼 가격에 여러 명을 불러들입니다.`;
+      } else {
+        label = `오픈 레이즈(RFI) ${bbText(sizeBB)}`;
+        rationale = `${ctx.position}는 ${isIP ? '후포지션이라 저렴한' : '선포지션이라 레인지를 좁히는'} ${bbText(sizeBB)} 오픈이 표준입니다.`;
+      }
+    } else if (facingBB <= 6) {
+      // One raise in front of us: this is a 3-bet. Out of position needs the
+      // bigger multiple because it will realize less of its equity postflop.
+      const mult = isIP ? 3 : 4;
+      const sizeBB = Math.round((facingBB * mult + callers) * 2) / 2;
+      target = sizeBB * bb;
+      label = `3-Bet ${bbText(sizeBB)}`;
+      rationale = `${bbText(Math.round(facingBB * 10) / 10)} 오픈에 대해 ${isIP ? '인포지션 3배' : '아웃오브포지션 4배'}${callers > 0 ? `, 콜러 ${callers}명분 +${callers}BB` : ''}로 ${bbText(sizeBB)}입니다.`;
+    } else {
+      // Already 3-bet in front: a 4-bet is small relative to the raise it faces
+      // because calling one commits a large share of the stack anyway.
+      const mult = isIP ? 2.2 : 2.5;
+      const sizeBB = Math.round(facingBB * mult * 2) / 2;
+      target = sizeBB * bb;
+      label = `4-Bet ${bbText(sizeBB)}`;
+      rationale = `${bbText(Math.round(facingBB * 10) / 10)} 3-Bet에 대한 ${mult}배 리레이즈로 ${bbText(sizeBB)}입니다. 이 사이즈면 콜만 받아도 스택 커밋 구간에 들어갑니다.`;
+    }
+  } else if (ctx.toCall === 0) {
+    // Betting into a checked pot. The pot, not the blind, is what the bet prices
+    // against, so the size is a fraction of it.
+    const fraction = betPotFraction != null ? betPotFraction : 0.5;
+    target = ctx.heroStreetBet + ctx.potSize * fraction;
+    const isDry = ctx.boardSuitCount >= 3;
+    label = `${Math.round(fraction * 100)}% 팟 벳`;
+    rationale = `팟 $${Math.round(ctx.potSize).toLocaleString()}의 ${Math.round(fraction * 100)}% 사이즈입니다. ${
+      isDry
+        ? '드라이 보드는 상대가 맞춘 게 적어 작은 사이즈로도 폴드를 받아냅니다.'
+        : '드로우가 많은 보드라 큰 사이즈로 드로우에 불리한 오즈를 강요합니다.'
+    }`;
+  } else {
+    // Raising a bet postflop. Later streets are bet bigger relative to the pot,
+    // so the multiple on the bet we face comes down.
+    const mult = ctx.street === 'flop' ? (isIP ? 3 : 3.5) : isIP ? 2.5 : 3;
+    target = ctx.currentBet * mult;
+    label = `상대 벳의 ${mult}배 레이즈`;
+    rationale = `상대 벳 $${Math.round(ctx.currentBet).toLocaleString()}의 ${mult}배로 올립니다. ${
+      isIP ? '인포지션' : '아웃오브포지션이라 한 단계 크게'
+    } 잡아 드로우가 싸게 따라오지 못하게 합니다.`;
+  }
+
+  // Round to a half-blind step so the number is readable at the table, then
+  // clamp into the legal range: never below the minimum raise, never above stack.
+  const step = Math.max(1, bb / 2);
+  let amount = Math.round(target / step) * step;
+  amount = Math.max(minRaiseTo, amount);
+  // The stack cap is applied last on purpose: when hero cannot afford the minimum
+  // raise, shoving what is left is the legal move, so the cap has to win.
+  amount = Math.min(maxRaiseTo, amount);
+
+  const isAllIn = amount >= maxRaiseTo;
+  if (isAllIn) {
+    label = '올인';
+    rationale = `권장 사이즈가 남은 스택($${Math.round(maxRaiseTo).toLocaleString()})을 넘어서므로 올인이 됩니다.`;
+  }
+
+  const added = Math.max(0, amount - ctx.heroStreetBet);
+  return {
+    amount,
+    amountBB: Math.round((amount / bb) * 10) / 10,
+    potFraction: ctx.potSize > 0 ? Math.round((added / ctx.potSize) * 100) / 100 : 0,
+    label,
+    rationale,
+    isAllIn,
+  };
+}
+
 export function generateClientGTOAdvice(params: {
-  heroCards: Array<{ suit: string; rank: string; value: number }>;
-  communityCards: Array<{ suit: string; rank: string; value: number }>;
+  heroCards: Card[];
+  communityCards: Card[];
   street: string;
   potSize: number;
   currentBet: number;
@@ -23,6 +155,9 @@ export function generateClientGTOAdvice(params: {
   activeOpponents: number;
   calculatedEquity: number;
   potOdds: number;
+  bigBlind?: number;
+  callersInPot?: number;
+  minRaiseTo?: number;
 }): CoachAdvicePayload {
   const {
     communityCards = [],
@@ -31,8 +166,12 @@ export function generateClientGTOAdvice(params: {
     currentBet = 0,
     toCall = 0,
     position = 'BTN',
+    heroChips = 0,
     calculatedEquity = 50,
     potOdds = 0,
+    bigBlind = 20,
+    callersInPot = 0,
+    minRaiseTo = 0,
   } = params;
 
   const isChecked = toCall === 0;
@@ -41,6 +180,9 @@ export function generateClientGTOAdvice(params: {
 
   let action: CoachAdvicePayload['action'] = isChecked ? 'CHECK' : 'FOLD';
   let suggestedAmount = 0;
+  // Postflop bet sizing intent, as a fraction of the pot. The bands set it; the
+  // sizing engine below converts it (and every raise) into an actual number.
+  let betPotFraction: number | null = null;
   let confidence = 85;
   let summary = '';
   const reasoning: string[] = [];
@@ -77,21 +219,19 @@ export function generateClientGTOAdvice(params: {
     if (isChecked) {
       action = 'BET';
       const isDryBoard = boardCount >= 3 && new Set(communityCards.map(c => c.suit)).size >= 3;
-      suggestedAmount = Math.max(20, Math.round(potSize * (isDryBoard ? 0.33 : 0.67)));
+      betPotFraction = isDryBoard ? 0.33 : 0.67;
       summary = '압도적인 에쿼티 우위를 가진 밸류 핸드입니다. 팟을 적극적으로 키우세요.';
       reasoning.push(`에쿼티가 ${calculatedEquity}%로 상대 레인지를 크게 앞서고 있습니다.`);
       reasoning.push('상대의 미들 페어 및 드로우 핸드로부터 최대 밸류를 추출하기 위한 벳입니다.');
       gtoConcept = 'GTO 밸류 베팅 원칙: 강한 핸드로 팟을 선제적으로 키워 EV를 극대화';
     } else if (calculatedEquity >= 80) {
       action = 'RAISE';
-      suggestedAmount = Math.round(currentBet * 2.5);
       summary = '최상위 몬스터 핸드입니다. 리레이즈로 주도권을 잡고 상대의 칩을 압박하세요.';
       reasoning.push(`승률 ${calculatedEquity}%로 넛(Nut)에 가까운 강한 핸드입니다.`);
       reasoning.push('상대의 베팅에 밸류 레이즈로 응수하여 팟을 극대화합니다.');
       gtoConcept = 'Polarized Range Value Raise: 상대의 콜 레인지를 타겟팅한 리레이즈';
     } else {
       action = toCall > potSize * 0.8 ? 'CALL' : 'RAISE';
-      suggestedAmount = action === 'RAISE' ? Math.round(currentBet * 2.2) : 0;
       summary = '우수한 승률을 보유하고 있어 적극적인 레이즈 또는 팟 컨트롤 콜이 유효합니다.';
       reasoning.push(`에쿼티 ${calculatedEquity}%로 승산이 매우 높습니다.`);
       reasoning.push(`팟 오즈 요구치(${potOdds}%)를 크게 상회하는 절대적 +EV 상황입니다.`);
@@ -107,7 +247,7 @@ export function generateClientGTOAdvice(params: {
     if (isChecked) {
       if (position === 'BTN' || position === 'CO') {
         action = 'BET';
-        suggestedAmount = Math.max(20, Math.round(potSize * 0.4));
+        betPotFraction = 0.4;
         summary = '포지션 이점과 양호한 에쿼티를 활용한 주도권 C-Bet(컨티뉴에이션 벳)을 권장합니다.';
         reasoning.push(`에쿼티 ${calculatedEquity}% 및 포지션(${position}) 이점을 동시에 확보했습니다.`);
         reasoning.push('상대방에게 폴드 에쿼티를 강요하고 팟을 리드합니다.');
@@ -121,7 +261,6 @@ export function generateClientGTOAdvice(params: {
       }
     } else if (calculatedEquity >= potOdds + 25 && toCall <= potSize * 0.5) {
       action = 'RAISE';
-      suggestedAmount = Math.round(currentBet * 2.2);
       summary = `승률(${calculatedEquity}%)이 필요 오즈(${potOdds}%)를 크게 앞서고 콜 가격도 저렴해, 밸류 레이즈로 팟을 키우는 편이 콜보다 EV가 높습니다.`;
       reasoning.push(`요구 승률 ${potOdds}% 대비 실제 승률 ${calculatedEquity}%로 여유가 큽니다.`);
       reasoning.push('단순 콜로 팟을 정체시키기보다 레이즈로 밸류를 추가 확보합니다.');
@@ -143,7 +282,7 @@ export function generateClientGTOAdvice(params: {
     if (isChecked) {
       if (position === 'BTN' && boardCount >= 3) {
         action = 'BET';
-        suggestedAmount = Math.max(20, Math.round(potSize * 0.33));
+        betPotFraction = 0.33;
         summary = '포지션 이점과 백도어/드로우 에쿼티를 활용한 1/3 팟 세미 블러프(Semi-Bluff)입니다.';
         reasoning.push('적은 칩으로 상대방의 위크 핸드를 폴드시킬 수 있는 기회입니다.');
         reasoning.push('턴/리버에서 발전할 경우 큰 팟을 독식할 잠재력(Implied Odds)이 있습니다.');
@@ -183,10 +322,13 @@ export function generateClientGTOAdvice(params: {
     }
   }
 
-  // Preflop override
-  if (isPreflop && isChecked && (position === 'BTN' || position === 'CO') && calculatedEquity >= 45) {
+  // Preflop, an unraised pot is an open-raise decision, not a call decision:
+  // limping forfeits the initiative. The bands above cannot see that, because
+  // from an opener's seat the big blind looks like an ordinary bet to call, so
+  // only the big blind ever reached the old isChecked version of this rule.
+  const isUnraisedPreflop = isPreflop && currentBet <= bigBlind;
+  if (isUnraisedPreflop && (action === 'CALL' || action === 'CHECK') && calculatedEquity >= 45) {
     action = 'RAISE';
-    suggestedAmount = 50;
     summary = `${position} 포지션에서 오픈 레이즈(RFI)로 블라인드를 스틸하거나 팟을 주도하세요.`;
     reasoning.length = 0;
     reasoning.push(`에쿼티 ${calculatedEquity}%로 ${position}에서 오픈하기 충분한 레인지입니다.`);
@@ -194,9 +336,37 @@ export function generateClientGTOAdvice(params: {
     gtoConcept = 'Raise First In (RFI) Standard Range';
   }
 
+  // Size the action once, after the bands have settled what it is.
+  let sizing: RaiseSizing | null = null;
+  if (action === 'BET' || action === 'RAISE') {
+    const heroStreetBet = Math.max(0, currentBet - toCall);
+    sizing = computeRaiseSizing(
+      {
+        street,
+        bigBlind,
+        potSize,
+        currentBet,
+        toCall,
+        heroStreetBet,
+        heroChips,
+        position,
+        callersInPot,
+        minRaiseTo: minRaiseTo || (currentBet > 0 ? currentBet + bigBlind : bigBlind),
+        boardSuitCount: new Set(communityCards.map(c => c.suit)).size,
+      },
+      betPotFraction
+    );
+    suggestedAmount = sizing.amount;
+    if (sizing.isAllIn) action = 'ALL_IN';
+  }
+
   return {
     action,
     suggestedAmount,
+    suggestedAmountBB: sizing ? sizing.amountBB : undefined,
+    sizingLabel: sizing ? sizing.label : undefined,
+    sizingRationale: sizing ? sizing.rationale : undefined,
+    potFraction: sizing ? sizing.potFraction : undefined,
     confidence,
     summary,
     reasoning,

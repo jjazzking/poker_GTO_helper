@@ -288,6 +288,11 @@ export default function App() {
       return;
     }
 
+    const callersInPot = players.filter(
+      p => !p.isHuman && !p.folded && p.lastAction?.type === 'call' && p.lastAction.street === bettingRound
+    ).length;
+    const minRaiseTo = currentHighestBet > 0 ? currentHighestBet + minRaiseIncrement : BIG_BLIND;
+
     lastFetchedStateRef.current = stateKey;
     isFetchingCoachRef.current = true;
     setIsLoadingCoach(true);
@@ -308,6 +313,9 @@ export default function App() {
           activeOpponents,
           calculatedEquity: equityData.winRate,
           potOdds: equityData.potOdds,
+          bigBlind: BIG_BLIND,
+          callersInPot,
+          minRaiseTo,
         }),
       });
 
@@ -327,6 +335,9 @@ export default function App() {
           activeOpponents,
           calculatedEquity: equityData.winRate,
           potOdds: equityData.potOdds,
+          bigBlind: BIG_BLIND,
+          callersInPot,
+          minRaiseTo,
         });
         setCoachAdvice(fallback);
       }
@@ -343,13 +354,16 @@ export default function App() {
         activeOpponents,
         calculatedEquity: equityData.winRate,
         potOdds: equityData.potOdds,
+        bigBlind: BIG_BLIND,
+        callersInPot,
+        minRaiseTo,
       });
       setCoachAdvice(fallback);
     } finally {
       isFetchingCoachRef.current = false;
       setIsLoadingCoach(false);
     }
-  }, [players, communityCards, bettingRound, currentHighestBet, pots, equityData, handNumber]);
+  }, [players, communityCards, bettingRound, currentHighestBet, minRaiseIncrement, pots, equityData, handNumber]);
 
   // Recalculate live equity whenever cards, board, or highest bet changes
   useEffect(() => {
@@ -382,6 +396,13 @@ export default function App() {
       const eq = calculateLiveEquity(hero.cards, communityCards, activeCount, totalPot, toCall, EQUITY_TRIALS);
       setEquityData(eq);
 
+      // Sizing inputs: a raise is only meaningful in big blinds, and it has to
+      // land inside the legal range the betting controls enforce.
+      const callersInPot = players.filter(
+        p => !p.isHuman && !p.folded && p.lastAction?.type === 'call' && p.lastAction.street === bettingRound
+      ).length;
+      const minRaiseTo = currentHighestBet > 0 ? currentHighestBet + minRaiseIncrement : BIG_BLIND;
+
       // Immediate local GTO advice fallback so HUD updates instantly
       const instantGTO = generateClientGTOAdvice({
         heroCards: hero.cards,
@@ -395,10 +416,13 @@ export default function App() {
         activeOpponents: activeCount,
         calculatedEquity: eq.winRate,
         potOdds: eq.potOdds,
+        bigBlind: BIG_BLIND,
+        callersInPot,
+        minRaiseTo,
       });
       setCoachAdvice(prev => (prev ? { ...prev, ...instantGTO, confidence: prev.confidence || instantGTO.confidence } : instantGTO));
     }
-  }, [players, communityCards, currentHighestBet, pots, bettingRound, handNumber]);
+  }, [players, communityCards, currentHighestBet, minRaiseIncrement, pots, bettingRound, handNumber]);
 
   // Assign Positions according to dealer button
   const assignPositions = (tablePlayers: Player[], dealerIdx: number): Player[] => {

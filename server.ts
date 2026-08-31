@@ -2,6 +2,9 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+// The coach's GTO fallback is shared with the client rather than duplicated here:
+// the two copies had already drifted, and sizing logic only wants one home.
+import { generateClientGTOAdvice, CoachAdvicePayload } from './src/lib/gtoSolver';
 
 let aiClient: GoogleGenAI | null = null;
 
@@ -70,214 +73,6 @@ function setToCache<T>(key: string, data: T): void {
 }
 
 // Rule-Based Expert GTO Engine for Instant Resilient Responses
-interface CoachAdvicePayload {
-  action: 'FOLD' | 'CHECK' | 'CALL' | 'BET' | 'RAISE' | 'ALL_IN';
-  suggestedAmount: number;
-  confidence: number;
-  summary: string;
-  reasoning: string[];
-  gtoConcept: string;
-  bluffPercent: number;
-  valuePercent: number;
-}
-
-function generateGTOFallbackCoachAdvice(params: {
-  heroCards: Array<{ suit: string; rank: string; value: number }>;
-  communityCards: Array<{ suit: string; rank: string; value: number }>;
-  street: string;
-  potSize: number;
-  currentBet: number;
-  toCall: number;
-  position: string;
-  heroChips: number;
-  activeOpponents: number;
-  calculatedEquity: number;
-  potOdds: number;
-}): CoachAdvicePayload {
-  const {
-    heroCards = [],
-    communityCards = [],
-    street = 'preflop',
-    potSize = 0,
-    currentBet = 0,
-    toCall = 0,
-    position = 'BTN',
-    calculatedEquity = 50,
-    potOdds = 0,
-  } = params;
-
-  const isChecked = toCall === 0;
-  const isPreflop = street === 'preflop';
-  const boardCount = communityCards.length;
-
-  let action: CoachAdvicePayload['action'] = isChecked ? 'CHECK' : 'FOLD';
-  let suggestedAmount = 0;
-  let confidence = 85;
-  let summary = '';
-  const reasoning: string[] = [];
-  let gtoConcept = '';
-  let bluffPercent = 15;
-  let valuePercent = 85;
-
-  const shortfall = potOdds - calculatedEquity;
-
-  // Facing a bet, whether to fold is a pot-odds question and nothing else: a
-  // cheap call can be +EV with a weak hand, and an expensive one can be -EV with
-  // a strong one. So the comparison happens once, here, for every equity level.
-  // The bands below only decide how aggressive the non-fold line is; none of
-  // them may fold on absolute hand strength alone.
-  if (!isChecked && calculatedEquity < potOdds) {
-    action = 'FOLD';
-    confidence = shortfall >= 15 ? 90 : 70;
-    valuePercent = 20;
-    bluffPercent = 80;
-    summary = `콜 가격이 비쌉니다. 필요 승률 ${potOdds}% 대비 실제 승률이 ${calculatedEquity}%로 ${shortfall}%p 부족한 -EV 상황입니다.`;
-    reasoning.push(`$${toCall.toLocaleString()} 콜은 최종 팟의 ${potOdds}%를 부담하는 것이므로 최소 ${potOdds}%의 승률이 필요합니다.`);
-    reasoning.push(`현재 승률 ${calculatedEquity}%로는 이 가격에 반복해서 콜할 경우 장기 손실이 누적됩니다.`);
-    if (shortfall <= 5) {
-      reasoning.push('다만 차이가 크지 않아, 임플라이드 오즈(완성 시 추가 수익)가 크다면 콜도 검토 가능한 경계 스팟입니다.');
-    }
-    gtoConcept = 'Pot Odds Discipline: 가격이 맞지 않는 콜의 수학적 손절';
-  }
-  // 1. High Equity (Monster / Dominant Made Hand)
-  else if (calculatedEquity >= 68) {
-    confidence = 92;
-    valuePercent = 90;
-    bluffPercent = 10;
-
-    if (isChecked) {
-      action = 'BET';
-      const isDryBoard = boardCount >= 3 && new Set(communityCards.map(c => c.suit)).size >= 3;
-      suggestedAmount = Math.max(20, Math.round(potSize * (isDryBoard ? 0.33 : 0.67)));
-      summary = '압도적인 에쿼티 우위를 가진 밸류 핸드입니다. 팟을 적극적으로 키우세요.';
-      reasoning.push(`에쿼티가 ${calculatedEquity}%로 상대 레인지를 크게 앞서고 있습니다.`);
-      reasoning.push('상대의 미들 페어 및 드로우 핸드로부터 최대 밸류를 추출하기 위한 벳입니다.');
-      gtoConcept = 'GTO 밸류 베팅 원칙: 강한 핸드로 팟을 선제적으로 키워 EV를 극대화';
-    } else if (calculatedEquity >= 80) {
-      action = 'RAISE';
-      suggestedAmount = Math.round(currentBet * 2.5);
-      summary = '최상위 몬스터 핸드입니다. 리레이즈로 주도권을 잡고 상대의 칩을 압박하세요.';
-      reasoning.push(`승률 ${calculatedEquity}%로 넛(Nut)에 가까운 강한 핸드입니다.`);
-      reasoning.push('상대의 베팅에 밸류 레이즈로 응수하여 팟을 극대화합니다.');
-      gtoConcept = 'Polarized Range Value Raise: 상대의 콜 레인지를 타겟팅한 리레이즈';
-    } else {
-      action = toCall > potSize * 0.8 ? 'CALL' : 'RAISE';
-      suggestedAmount = action === 'RAISE' ? Math.round(currentBet * 2.2) : 0;
-      summary = '우수한 승률을 보유하고 있어 적극적인 레이즈 또는 팟 컨트롤 콜이 유효합니다.';
-      reasoning.push(`에쿼티 ${calculatedEquity}%로 승산이 매우 높습니다.`);
-      reasoning.push(`팟 오즈 요구치(${potOdds}%)를 크게 상회하는 절대적 +EV 상황입니다.`);
-      gtoConcept = 'Linear Value Line: 높은 승률 기반의 적극적 액션 전개';
-    }
-  }
-  // 2. Strong / Medium-High Equity (Good Made Hand or Strong Draw)
-  else if (calculatedEquity >= 50) {
-    confidence = 82;
-    valuePercent = 75;
-    bluffPercent = 25;
-
-    if (isChecked) {
-      if (position === 'BTN' || position === 'CO') {
-        action = 'BET';
-        suggestedAmount = Math.max(20, Math.round(potSize * 0.4));
-        summary = '포지션 이점과 양호한 에쿼티를 활용한 주도권 C-Bet(컨티뉴에이션 벳)을 권장합니다.';
-        reasoning.push(`에쿼티 ${calculatedEquity}% 및 포지션(${position}) 이점을 동시에 확보했습니다.`);
-        reasoning.push('상대방에게 폴드 에쿼티를 강요하고 팟을 리드합니다.');
-        gtoConcept = 'Position & Initiative Advantage: 후포지션 주도권을 활용한 지분 실현';
-      } else {
-        action = 'CHECK';
-        summary = '중간 강도의 핸드로 체크를 통해 안전하게 팟 크기를 컨트롤(Pot Control)합니다.';
-        reasoning.push(`현재 에쿼티 ${calculatedEquity}%로 쇼다운 밸류가 있어 무리한 베팅보다는 팟 관리가 적합합니다.`);
-        reasoning.push('상대의 체크-레이즈 위험을 방지하고 다음 카드를 확인합니다.');
-        gtoConcept = 'Pot Control & Showdown Value: 중위권 핸드의 분산 최소화 전략';
-      }
-    } else if (calculatedEquity >= potOdds + 25 && toCall <= potSize * 0.5) {
-      action = 'RAISE';
-      suggestedAmount = Math.round(currentBet * 2.2);
-      summary = `승률(${calculatedEquity}%)이 필요 오즈(${potOdds}%)를 크게 앞서고 콜 가격도 저렴해, 밸류 레이즈로 팟을 키우는 편이 콜보다 EV가 높습니다.`;
-      reasoning.push(`요구 승률 ${potOdds}% 대비 실제 승률 ${calculatedEquity}%로 여유가 큽니다.`);
-      reasoning.push('단순 콜로 팟을 정체시키기보다 레이즈로 밸류를 추가 확보합니다.');
-      gtoConcept = 'Value Raise with Equity Surplus: 에쿼티 잉여분을 팟 사이즈로 전환';
-    } else {
-      action = 'CALL';
-      summary = `팟 오즈 요구치(${potOdds}%)보다 에쿼티(${calculatedEquity}%)가 높아 수학적으로 확실한 +EV 콜입니다.`;
-      reasoning.push(`요구 승률 ${potOdds}% 대비 실제 승률 ${calculatedEquity}%로 롱런 시 확실한 수익 발생.`);
-      reasoning.push('상대의 블러프 레인지를 캐치하거나 쇼다운에서 승리를 노립니다.');
-      gtoConcept = 'Pot Odds & MDF (Minimum Defense Frequency) 준수';
-    }
-  }
-  // 3. Speculative / Draw / Bluffing Equity (30% ~ 49%)
-  else if (calculatedEquity >= 30) {
-    confidence = 78;
-    valuePercent = 40;
-    bluffPercent = 60;
-
-    if (isChecked) {
-      if (position === 'BTN' && boardCount >= 3) {
-        action = 'BET';
-        suggestedAmount = Math.max(20, Math.round(potSize * 0.33));
-        summary = '포지션 이점과 백도어/드로우 에쿼티를 활용한 1/3 팟 세미 블러프(Semi-Bluff)입니다.';
-        reasoning.push('적은 칩으로 상대방의 위크 핸드를 폴드시킬 수 있는 기회입니다.');
-        reasoning.push('턴/리버에서 발전할 경우 큰 팟을 독식할 잠재력(Implied Odds)이 있습니다.');
-        gtoConcept = 'Semi-Bluffing & Fold Equity: 발전 가능성이 있는 핸드로 공격권 행사';
-      } else {
-        action = 'CHECK';
-        summary = '공짜 카드(Free Card)를 확인하며 안전하게 드로우를 노립니다.';
-        reasoning.push('칩 소모 없이 다음 스트리트의 완성 여부를 확인하는 것이 최선입니다.');
-        gtoConcept = 'Realizing Equity for Free: 드로우 핸드의 무료 에쿼티 실현';
-      }
-    } else {
-      action = 'CALL';
-      summary = `오즈가 충족되어 드로우 콜이 정당화됩니다 (승률 ${calculatedEquity}% >= 필요 오즈 ${potOdds}%).`;
-      reasoning.push(`요구 승률 ${potOdds}% 대비 실제 승률 ${calculatedEquity}%로 가격이 맞습니다.`);
-      reasoning.push('추가 팟 잠재 수익(Implied Odds)을 감안하면 더욱 유리합니다.');
-      gtoConcept = 'Implied Odds & Pot Odds Synergy';
-    }
-  }
-  // 4. Low Equity / Weak Hands (< 30%)
-  else {
-    confidence = 76;
-    valuePercent = 15;
-    bluffPercent = 85;
-
-    if (isChecked) {
-      action = 'CHECK';
-      summary = '핸드가 약하므로 체크로 넘어가며 추가 손실을 방지합니다.';
-      reasoning.push(`현재 에쿼티(${calculatedEquity}%)가 낮아 칩을 투자하기 부적합합니다.`);
-      reasoning.push('체크로 쇼다운에 도달하거나 상대 액션을 탐색하세요.');
-      gtoConcept = 'Check Range Protection & Risk Aversion';
-    } else {
-      action = 'CALL';
-      summary = `핸드 자체는 약하지만 콜 비용이 저렴합니다. 필요 승률이 ${potOdds}%에 불과해 승률 ${calculatedEquity}%로도 +EV 콜입니다.`;
-      reasoning.push(`$${toCall.toLocaleString()} 콜의 요구 승률은 ${potOdds}%로, 현재 승률 ${calculatedEquity}%가 이를 상회합니다.`);
-      reasoning.push('절대 강도가 아니라 가격이 콜을 정당화하는 스팟입니다. 다음 스트리트에서 큰 베팅을 만나면 폴드할 준비를 하세요.');
-      gtoConcept = 'Price Over Strength: 핸드 강도가 아닌 가격이 결정하는 콜';
-    }
-  }
-
-  // Preflop override if suited connectors or high broadways in BTN
-  if (isPreflop && isChecked && (position === 'BTN' || position === 'CO') && calculatedEquity >= 45) {
-    action = 'RAISE';
-    suggestedAmount = 50; // 2.5 BB
-    summary = `${position} 포지션에서 오픈 레이즈(RFI)로 블라인드를 스틸하거나 팟을 주도하세요.`;
-    reasoning.length = 0;
-    reasoning.push(`에쿼티 ${calculatedEquity}%로 ${position}에서 오픈하기 충분한 레인지입니다.`);
-    reasoning.push('프리플랍에서 림프(Limp) 대신 오픈 레이즈로 이니셔티브를 잡는 것이 정석입니다.');
-    gtoConcept = 'Raise First In (RFI) Standard Range';
-  }
-
-  return {
-    action,
-    suggestedAmount,
-    confidence,
-    summary,
-    reasoning,
-    gtoConcept,
-    bluffPercent,
-    valuePercent,
-  };
-}
-
-// Fallback Hand Review Solver
 function generateGTOFallbackHandReview(handHistory: any) {
   const net = handHistory?.netChips || 0;
   const isWon = net > 0;
@@ -397,6 +192,9 @@ async function startServer() {
       activeOpponents,
       calculatedEquity,
       potOdds,
+      bigBlind,
+      callersInPot,
+      minRaiseTo,
     } = req.body;
 
     // Cache key based on game state fingerprint
@@ -417,7 +215,7 @@ async function startServer() {
     }
 
     // Fallback generator ready
-    const fallbackAdvice = generateGTOFallbackCoachAdvice({
+    const fallbackAdvice = generateClientGTOAdvice({
       heroCards: heroCards || [],
       communityCards: communityCards || [],
       street: street || 'preflop',
@@ -429,6 +227,9 @@ async function startServer() {
       activeOpponents: activeOpponents || 1,
       calculatedEquity: calculatedEquity || 50,
       potOdds: potOdds || 0,
+      bigBlind: bigBlind || 20,
+      callersInPot: callersInPot || 0,
+      minRaiseTo: minRaiseTo || 0,
     });
 
     if (!isGeminiAvailable()) {
@@ -511,7 +312,35 @@ GTO 이론, 포지션 이점, 보드 텍스처, SPR(Stack-to-Pot Ratio), 상대 
       });
 
       const text = response.text || '';
-      const parsed = JSON.parse(text);
+      const parsed = JSON.parse(text) as CoachAdvicePayload;
+
+      if (parsed.action === 'BET' || parsed.action === 'RAISE' || parsed.action === 'ALL_IN') {
+        const bb = bigBlind || 20;
+        const heroStreetBet = Math.max(0, (currentBet || 0) - (toCall || 0));
+        const stackCap = (heroChips || 0) + heroStreetBet;
+        const floor = minRaiseTo || ((currentBet || 0) > 0 ? (currentBet || 0) + bb : bb);
+
+        if (parsed.suggestedAmount > 0) {
+          const clamped = Math.max(Math.min(floor, stackCap), Math.min(stackCap, parsed.suggestedAmount));
+          parsed.suggestedAmount = clamped;
+          parsed.suggestedAmountBB = Math.round((clamped / bb) * 10) / 10;
+          parsed.potFraction =
+            potSize > 0 ? Math.round((Math.max(0, clamped - heroStreetBet) / potSize) * 100) / 100 : 0;
+          parsed.sizingLabel = `${parsed.suggestedAmountBB}BB`;
+          if (clamped >= stackCap) {
+            parsed.action = 'ALL_IN';
+            parsed.sizingLabel = '올인';
+          }
+        } else {
+          // Gemini picked an aggressive action but no number: fall back to the solver's size.
+          parsed.suggestedAmount = fallbackAdvice.suggestedAmount;
+          parsed.suggestedAmountBB = fallbackAdvice.suggestedAmountBB;
+          parsed.sizingLabel = fallbackAdvice.sizingLabel;
+          parsed.sizingRationale = fallbackAdvice.sizingRationale;
+          parsed.potFraction = fallbackAdvice.potFraction;
+        }
+      }
+
       setToCache(cacheKey, parsed);
       return res.json(parsed);
     } catch (err: unknown) {

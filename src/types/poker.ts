@@ -144,7 +144,11 @@ export interface LiveEquityData {
 
 export interface CoachAdvice {
   action: 'FOLD' | 'CHECK' | 'CALL' | 'BET' | 'RAISE' | 'ALL_IN';
-  suggestedAmount?: number;
+  suggestedAmount?: number; // Total chips to raise TO on this street
+  suggestedAmountBB?: number; // The same size in big blinds
+  sizingLabel?: string; // e.g. "3-Bet 9BB", "67% 팟 벳", "올인"
+  sizingRationale?: string; // One line on where the size came from
+  potFraction?: number; // Chips added, as a fraction of the pot
   confidence: number; // 0-100%
   summary: string;
   reasoning: string[];

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { LiveEquityData, CoachAdvice } from '../types/poker';
-import { Sparkles, Brain, Calculator, Target, RefreshCw, HelpCircle, Layers, CheckCircle2, TrendingUp, AlertTriangle, ChevronDown, ChevronUp, Plus, Minus } from 'lucide-react';
+import { Sparkles, Brain, Calculator, Target, RefreshCw, HelpCircle, Layers, CheckCircle2, TrendingUp, AlertTriangle, ChevronDown, ChevronUp, Plus, Minus, Coins } from 'lucide-react';
 import { PlayingCard } from './PlayingCard';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -340,10 +340,40 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
                     coachAdvice.action
                   )}`}
                 >
-                  {coachAdvice.action}{' '}
-                  {coachAdvice.suggestedAmount ? `$${coachAdvice.suggestedAmount.toLocaleString()}` : ''}
+                  {coachAdvice.action}
+                  {coachAdvice.suggestedAmount ? (
+                    <>
+                      {' '}
+                      ${coachAdvice.suggestedAmount.toLocaleString()}
+                      {coachAdvice.suggestedAmountBB ? (
+                        <span className="ml-1 opacity-80">({coachAdvice.suggestedAmountBB}BB)</span>
+                      ) : null}
+                    </>
+                  ) : null}
                 </span>
               </div>
+
+              {/* Bet / raise sizing: what number to use and where it came from */}
+              {coachAdvice.sizingLabel && (
+                <div className="flex flex-col gap-1 bg-amber-950/25 border border-amber-500/25 px-2.5 py-2 rounded-xl">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <Coins className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                    <span className="text-[11px] font-extrabold text-amber-200 break-words">
+                      {coachAdvice.sizingLabel}
+                    </span>
+                    {typeof coachAdvice.potFraction === 'number' && coachAdvice.potFraction > 0 && (
+                      <span className="text-[10px] font-mono text-amber-300/90 px-1.5 py-0.5 bg-amber-900/50 rounded border border-amber-500/30">
+                        팟의 {Math.round(coachAdvice.potFraction * 100)}%
+                      </span>
+                    )}
+                  </div>
+                  {coachAdvice.sizingRationale && (
+                    <p className="text-[10px] leading-snug text-slate-300 break-words">
+                      {coachAdvice.sizingRationale}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Summary with full wrapping */}
               <p className="text-xs font-medium text-slate-200 leading-relaxed bg-slate-900/80 p-2.5 rounded-xl border border-slate-800/80 break-words">
