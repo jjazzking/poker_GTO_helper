@@ -912,6 +912,29 @@ export function calculateBotAction(
 
   const stack = bot.chips;
 
+  // `amount` on a bet or raise is the total this player will have in front once
+  // the action is applied, so it is bounded by the chips behind PLUS whatever is
+  // already committed on this street -- not by the remaining stack alone. Sizing
+  // a raise with the remaining stack produced "raises" that landed below the
+  // current bet, which are not raises at all: the player ended the action
+  // unmatched and not all in, so the round could never finish.
+  const maxRaiseTo = bot.chips + bot.currentBet;
+  const callAllIn = (thought: string) => ({
+    action: 'call' as ActionType,
+    amount: Math.min(bot.chips, toCall),
+    thought,
+  });
+
+  // Turns a desired size into a legal one, or falls back to calling when the
+  // stack cannot clear the current bet.
+  const aggressive = (want: number, thought: string) => {
+    const target = Math.min(maxRaiseTo, Math.max(want, currentHighestBet + bigBlind));
+    if (target <= currentHighestBet) {
+      return callAllIn('스택이 부족해 레이즈 대신 콜(올인)');
+    }
+    return { action: (isChecked ? 'bet' : 'raise') as ActionType, amount: target, thought };
+  };
+
   // Preflop logic
   if (isPreflop) {
     const hand = evaluateHand(bot.cards);
@@ -931,19 +954,17 @@ export function calculateBotAction(
 
     if (isMonster) {
       if (toCall > 0 && Math.random() < 0.8) {
-        const raiseAmt = Math.min(stack, Math.max(bigBlind * 3, currentHighestBet * 3));
-        return { action: 'raise', amount: raiseAmt, thought: '몬스터 핸드로 밸류 3-Bet 레이즈' };
+        return aggressive(Math.max(bigBlind * 3, currentHighestBet * 3), '몬스터 핸드로 밸류 3-Bet 레이즈');
       }
       if (isChecked) {
-        return { action: 'bet', amount: Math.min(stack, bigBlind * 3), thought: '프리플랍 오픈 레이즈' };
+        return aggressive(bigBlind * 3, '프리플랍 오픈 레이즈');
       }
       return { action: 'call', amount: toCall, thought: '프리플랍 콜' };
     }
 
     if (personalityId === 'aggro_shark') {
       if (Math.random() < 0.6 && (isStrong || isPlayable)) {
-        const raiseAmt = Math.min(stack, Math.max(bigBlind * 3, currentHighestBet * 2.5));
-        return { action: isChecked ? 'bet' : 'raise', amount: raiseAmt, thought: '어그레시브 압박 레이즈' };
+        return aggressive(Math.max(bigBlind * 3, currentHighestBet * 2.5), '어그레시브 압박 레이즈');
       }
     }
 
@@ -962,7 +983,7 @@ export function calculateBotAction(
     }
 
     if (isStrong) {
-      if (isChecked) return { action: 'bet', amount: Math.min(stack, bigBlind * 2.5), thought: '표준 오픈 레이즈' };
+      if (isChecked) return aggressive(bigBlind * 2.5, '표준 오픈 레이즈');
       if (toCall <= bigBlind * 4) return { action: 'call', amount: Math.min(stack, toCall), thought: '강한 핸드로 콜' };
     }
 
@@ -982,20 +1003,20 @@ export function calculateBotAction(
     if (personalityId === 'tricky_trap' && Math.random() < 0.5 && isChecked) {
       return { action: 'check', amount: 0, thought: '슬로우플레이 트랩 체크' };
     }
-    const betSize = Math.min(stack, Math.max(bigBlind, Math.round(potSize * 0.65)));
     if (isChecked) {
-      return { action: 'bet', amount: betSize, thought: '강한 밸류 벳' };
+      return aggressive(Math.max(bigBlind, Math.round(potSize * 0.65)), '강한 밸류 벳');
     }
-    const raiseSize = Math.min(stack, Math.max(currentHighestBet * 2.5, currentHighestBet + Math.round(potSize * 0.5)));
-    return { action: 'raise', amount: raiseSize, thought: '강한 밸류 레이즈' };
+    return aggressive(
+      Math.max(currentHighestBet * 2.5, currentHighestBet + Math.round(potSize * 0.5)),
+      '강한 밸류 레이즈'
+    );
   }
 
   if (botEquity >= 50) {
     // Medium-Strong Hand
     if (isChecked) {
       if (Math.random() < 0.6) {
-        const betSize = Math.min(stack, Math.max(bigBlind, Math.round(potSize * 0.4)));
-        return { action: 'bet', amount: betSize, thought: '컨티뉴에이션 벳 (C-Bet)' };
+        return aggressive(Math.max(bigBlind, Math.round(potSize * 0.4)), '컨티뉴에이션 벳 (C-Bet)');
       }
       return { action: 'check', amount: 0, thought: '팟 컨트롤 체크' };
     }
@@ -1009,8 +1030,7 @@ export function calculateBotAction(
     // Drawing / Marginal Hand
     if (isChecked) {
       if (personalityId === 'aggro_shark' && Math.random() < 0.4) {
-        const betSize = Math.min(stack, Math.round(potSize * 0.5));
-        return { action: 'bet', amount: betSize, thought: '세미 블러프 벳' };
+        return aggressive(Math.round(potSize * 0.5), '세미 블러프 벳');
       }
       return { action: 'check', amount: 0, thought: '드로우 완성을 위해 체크' };
     }
@@ -1023,8 +1043,7 @@ export function calculateBotAction(
   // Weak Hand
   if (isChecked) {
     if (personalityId === 'aggro_shark' && Math.random() < 0.25) {
-      const betSize = Math.min(stack, Math.round(potSize * 0.6));
-      return { action: 'bet', amount: betSize, thought: '순수 블러프 벳' };
+      return aggressive(Math.round(potSize * 0.6), '순수 블러프 벳');
     }
     return { action: 'check', amount: 0, thought: '약한 핸드 체크' };
   }

@@ -943,8 +943,11 @@ export default function App() {
 
           case 'call': {
             pokerAudio.playChipBet();
-            const callAmount = Math.min(player.chips, amount);
-            const isAllIn = player.chips === callAmount;
+            // A call is always exactly what is owed, capped by the stack, no
+            // matter what the caller passed in.
+            const owed = Math.max(0, newHighestBet - player.currentBet);
+            const callAmount = Math.min(player.chips, owed);
+            const isAllIn = callAmount >= player.chips;
             updatedPlayers[playerIndex] = {
               ...player,
               chips: player.chips - callAmount,
@@ -959,9 +962,28 @@ export default function App() {
           case 'bet':
           case 'raise': {
             pokerAudio.playChipBet();
-            const raiseTo = Math.min(player.chips + player.currentBet, amount);
-            const additionalChips = raiseTo - player.currentBet;
-            const isAllIn = player.chips === additionalChips;
+            // `amount` is the total to have in front after the action, so the
+            // ceiling is the stack plus what is already committed.
+            const maxRaiseTo = player.chips + player.currentBet;
+            let raiseTo = Math.min(maxRaiseTo, Math.max(0, amount));
+
+            if (raiseTo < newHighestBet) {
+              // Below the current bet is not a raise. Left as-is it would end the
+              // action unmatched and not all in, and "all bets matched" could
+              // never become true again -- the table would rotate forever. The
+              // only legal move here is to put in what is left as a call.
+              raiseTo = Math.min(maxRaiseTo, newHighestBet);
+            } else if (raiseTo > newHighestBet) {
+              // A raise has to clear the last one by at least the minimum, unless
+              // the player is putting their whole stack in for less.
+              const minLegalRaiseTo = newHighestBet + newMinRaiseInc;
+              if (raiseTo < minLegalRaiseTo) raiseTo = Math.min(maxRaiseTo, minLegalRaiseTo);
+            }
+
+            // Never negative: a smaller total than what is already committed
+            // would hand chips back and mint them out of nothing.
+            const additionalChips = Math.max(0, raiseTo - player.currentBet);
+            const isAllIn = additionalChips >= player.chips;
 
             const raiseDiff = raiseTo - newHighestBet;
             if (raiseDiff > 0) {
@@ -1038,11 +1060,21 @@ export default function App() {
           return updatedPlayers;
         }
 
-        // Next player turn
+        // Next player turn. Bounded: the completion checks above are supposed to
+        // catch the case where nobody can act, but a bug there must not spin the
+        // browser in an unbounded loop.
         const n = updatedPlayers.length;
         let nextIdx = (playerIndex + 1) % n;
+        let scanned = 0;
         while (updatedPlayers[nextIdx].folded || updatedPlayers[nextIdx].isAllIn) {
           nextIdx = (nextIdx + 1) % n;
+          if (++scanned > n) {
+            // Nobody left to act; the street is done.
+            const streets: BettingRound[] = ['preflop', 'flop', 'turn', 'river', 'showdown'];
+            const next = streets[streets.indexOf(bettingRound) + 1] || 'showdown';
+            setTimeout(() => advanceStreet(updatedPlayers, next, deck, communityCards), 300 / gameSpeed);
+            return updatedPlayers;
+          }
         }
 
         setCurrentTurnPlayerId(updatedPlayers[nextIdx].id);
