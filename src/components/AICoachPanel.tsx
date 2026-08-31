@@ -73,7 +73,7 @@ export const AICoachPanel: React.FC<AICoachPanelProps> = ({
             <h3 className="text-sm font-bold text-slate-100 flex items-center gap-1.5">
               <span>AI 포커 코치 & 실시간 HUD</span>
               <span className="text-[10px] font-mono px-1.5 py-0.2 bg-indigo-500/20 text-indigo-300 rounded border border-indigo-500/30">
-                Gemini 3.7
+                Gemini & GTO
               </span>
             </h3>
             <p className="text-[11px] text-slate-400">승률 에쿼티, 팟 오즈 및 GTO 전략 실시간 코칭</p>

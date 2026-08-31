@@ -27,6 +27,29 @@ interface CacheEntry<T> {
 const cacheStore = new Map<string, CacheEntry<unknown>>();
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Circuit Breaker for Gemini API Quota Limits (429 / Resource Exhausted)
+let geminiQuotaBlockedUntil = 0;
+
+function isGeminiAvailable(): boolean {
+  if (!process.env.GEMINI_API_KEY) return false;
+  return Date.now() >= geminiQuotaBlockedUntil;
+}
+
+function handleGeminiQuotaError(err: unknown, fallbackDurationMs = 60000) {
+  let waitMs = fallbackDurationMs;
+  try {
+    const errStr = String(err);
+    const match = errStr.match(/retry in ([0-9.]+)s/i) || errStr.match(/"retryDelay":"(\d+)s"/i);
+    if (match && match[1]) {
+      waitMs = Math.ceil(parseFloat(match[1]) * 1000) + 1000;
+    }
+  } catch {
+    // Ignore parsing failure
+  }
+  geminiQuotaBlockedUntil = Date.now() + waitMs;
+  console.log(`[AI Coach] Gemini quota reached (429). Fast GTO solver active for next ${Math.round(waitMs / 1000)}s.`);
+}
+
 function getFromCache<T>(key: string): T | null {
   const item = cacheStore.get(key);
   if (!item) return null;
@@ -376,8 +399,6 @@ async function startServer() {
       return res.json(cached);
     }
 
-    const ai = getGeminiClient();
-
     // Fallback generator ready
     const fallbackAdvice = generateGTOFallbackCoachAdvice({
       heroCards: heroCards || [],
@@ -393,6 +414,12 @@ async function startServer() {
       potOdds: potOdds || 0,
     });
 
+    if (!isGeminiAvailable()) {
+      setToCache(cacheKey, fallbackAdvice);
+      return res.json(fallbackAdvice);
+    }
+
+    const ai = getGeminiClient();
     if (!ai) {
       setToCache(cacheKey, fallbackAdvice);
       return res.json(fallbackAdvice);
@@ -419,7 +446,7 @@ GTO 이론, 포지션 이점, 보드 텍스처, SPR(Stack-to-Pot Ratio), 상대 
 `;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-2.5-flash',
         contents: prompt,
         config: {
           systemInstruction: '당신은 프로 텍사스 홀덤 코치입니다. 친절하고 정확하며, 현대 포커(GTO/익스플로잇) 전략을 기반으로 구조화된 JSON 결과를 반환합니다.',
@@ -471,8 +498,7 @@ GTO 이론, 포지션 이점, 보드 텍스처, SPR(Stack-to-Pot Ratio), 상대 
       setToCache(cacheKey, parsed);
       return res.json(parsed);
     } catch (err: unknown) {
-      console.warn('Gemini API throttled/unavailable in /api/poker/coach, using resilient GTO solver fallback:', err);
-      // Seamless fallback with 200 OK
+      handleGeminiQuotaError(err);
       setToCache(cacheKey, fallbackAdvice);
       return res.json(fallbackAdvice);
     }
@@ -489,8 +515,13 @@ GTO 이론, 포지션 이점, 보드 텍스처, SPR(Stack-to-Pot Ratio), 상대 
     }
 
     const fallbackReview = generateGTOFallbackHandReview(handHistory);
-    const ai = getGeminiClient();
 
+    if (!isGeminiAvailable()) {
+      setToCache(cacheKey, fallbackReview);
+      return res.json(fallbackReview);
+    }
+
+    const ai = getGeminiClient();
     if (!ai) {
       setToCache(cacheKey, fallbackReview);
       return res.json(fallbackReview);
@@ -512,7 +543,7 @@ ${JSON.stringify(handHistory, null, 2)}
 `;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-2.5-flash',
         contents: prompt,
         config: {
           systemInstruction: '당신은 홀덤 핸드 복기 전문가입니다. 객관적이고 교육적인 톤으로 JSON을 반환합니다.',
@@ -543,7 +574,7 @@ ${JSON.stringify(handHistory, null, 2)}
       setToCache(cacheKey, parsed);
       return res.json(parsed);
     } catch (err: unknown) {
-      console.warn('Gemini API in /api/poker/analyze-hand failed, serving GTO solver review:', err);
+      handleGeminiQuotaError(err);
       setToCache(cacheKey, fallbackReview);
       return res.json(fallbackReview);
     }
@@ -561,8 +592,13 @@ ${JSON.stringify(handHistory, null, 2)}
     }
 
     const fallbackReply = { reply: generateGTOFallbackChatReply(trimmed) };
-    const ai = getGeminiClient();
 
+    if (!isGeminiAvailable()) {
+      setToCache(cacheKey, fallbackReply);
+      return res.json(fallbackReply);
+    }
+
+    const ai = getGeminiClient();
     if (!ai) {
       setToCache(cacheKey, fallbackReply);
       return res.json(fallbackReply);
@@ -578,7 +614,7 @@ ${JSON.stringify(handHistory, null, 2)}
       ];
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-2.5-flash',
         contents,
         config: {
           systemInstruction: `당신은 텍사스 홀덤 전문 AI 코치 "포커 마스터(Poker Master)"입니다. 
@@ -591,7 +627,7 @@ ${JSON.stringify(handHistory, null, 2)}
       setToCache(cacheKey, result);
       return res.json(result);
     } catch (err: unknown) {
-      console.warn('Gemini API in /api/poker/chat throttled, serving fallback answer:', err);
+      handleGeminiQuotaError(err);
       setToCache(cacheKey, fallbackReply);
       return res.json(fallbackReply);
     }
